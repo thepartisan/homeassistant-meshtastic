@@ -9,6 +9,7 @@ Validates Requirements 2.1, 2.7, 2.8:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -143,8 +144,42 @@ if not hasattr(_conn_pkg, "ClientApiConnection"):
         def is_connected(self):
             raise NotImplementedError
 
+        async def listen(self, on_start=None):
+            from aiomeshtastic.connection.listener import (
+                ClientApiConnectionPacketStreamListener,
+            )
+
+            if not self.is_connected:
+                if on_start is not None:
+                    on_start.close()
+                raise ClientApiNotConnectedError
+            with ClientApiConnectionPacketStreamListener() as listener:
+                self._packet_stream_listeners.append(listener)
+                try:
+                    if on_start is not None:
+                        await on_start
+                    async for packet in listener:
+                        yield packet
+                finally:
+                    try:
+                        self._packet_stream_listeners.remove(listener)
+                    except ValueError:
+                        pass
+
         async def _notify_packet_stream_listeners(self, packet, *, sequential=False):
-            pass
+            async def notify(listener, new_packet):
+                try:
+                    await listener.notify(new_packet)
+                except Exception:
+                    pass
+
+            if sequential:
+                for listener in self._packet_stream_listeners:
+                    await notify(listener, packet)
+            else:
+                await asyncio.wait(
+                    [asyncio.create_task(notify(listener, packet)) for listener in self._packet_stream_listeners]
+                )
 
     _conn_pkg.ClientApiConnection = _StubClientApiConnection
 
@@ -510,3 +545,48 @@ class TestMqttConnectionVirtualGateway:
         conn = MqttConnection(broker_host="localhost")
         assert conn._gateway_node_num != 0
         assert conn._gateway_node_num != 0xFFFFFFFF
+
+    @pytest.mark.asyncio
+    async def test_request_config_yields_control_before_completing(self):
+        """request_config() must yield control back to the event loop at
+        least once before returning, instead of completing as a single
+        uninterruptible synchronous burst.
+
+        This is what actually fixes a real production bug: MeshInterface.start()
+        creates its packet-processing-loop task before scheduling request_config()
+        as a background task, expecting the former to get a chance to register
+        as a listener first. But asyncio.create_task() only *schedules* a task -
+        if request_config() never awaits anything that genuinely suspends, it can
+        run to completion in one atomic burst without the event loop ever giving
+        the earlier-scheduled task a turn, no matter which was created first.
+        That let MeshInterface signal "ready" before its own node database
+        contained this connection's gateway node, so MeshInterface.connected_node()
+        returned an empty/incomplete node and callers (e.g. the config flow
+        building the entry title) hit a KeyError on "user".
+
+        Confirm a concurrently-scheduled coroutine gets at least one turn while
+        request_config() is in flight - proving it can no longer complete without
+        ever yielding.
+        """
+        conn = MqttConnection(broker_host="localhost", broker_port=1883)
+        conn._connected = True
+        conn._client = MagicMock()
+
+        ticks = 0
+
+        async def other_scheduled_work() -> None:
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0)
+
+        probe = asyncio.create_task(other_scheduled_work())
+        try:
+            result = await conn.request_config()
+        finally:
+            probe.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await probe
+
+        assert result is True
+        assert ticks >= 1

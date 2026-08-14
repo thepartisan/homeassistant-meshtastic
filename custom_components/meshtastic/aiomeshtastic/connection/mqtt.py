@@ -9,6 +9,7 @@ broker and yielding decoded ``FromRadio`` messages to the existing
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from collections.abc import AsyncIterable
@@ -74,7 +75,12 @@ class MqttConnection(ClientApiConnection):
         tls_context = None
         if self._use_tls:
             import ssl
-            tls_context = ssl.create_default_context()
+
+            # ssl.create_default_context() reads system trust stores from disk and
+            # is a blocking call; running it directly on the event loop trips
+            # Home Assistant's blocking-call detector. Offload it to a worker
+            # thread like any other blocking I/O.
+            tls_context = await asyncio.get_running_loop().run_in_executor(None, ssl.create_default_context)
 
         # Some brokers (e.g. the public mqtt.meshtastic.org) reject connections with
         # CONNACK "identifier rejected" unless given an explicit, short client ID;
@@ -209,40 +215,60 @@ class MqttConnection(ClientApiConnection):
     # ------------------------------------------------------------------
 
     async def request_config(self, minimal: bool = False) -> bool:  # noqa: FBT001, FBT002
-        """Synthesize virtual gateway node config and return immediately.
+        """Synthesize virtual gateway node config, waiting for delivery.
 
-        In MQTT mode there is no physical device to query. We fabricate
-        a minimal config response so that ``MeshInterface`` considers the
-        connection ready.
+        In MQTT mode there is no physical device to query, so we fabricate a
+        minimal config response. Rather than firing the synthesized messages
+        and returning immediately, this uses the same listen()-based
+        request/wait pattern the base ClientApiConnection.request_config()
+        uses for real devices: it registers as a listener *before* sending
+        anything, then waits to observe its own config_complete_id.
+
+        This matters because MeshInterface's packet-processing loop (which
+        turns these FromRadio messages into node-database entries) is a
+        separately scheduled consumer of the same broadcast, not something
+        this call can await directly. Returning immediately after just
+        enqueueing the messages let callers see connected_node_ready()
+        resolve before that loop had actually processed our own gateway
+        node's info, so MeshInterface.connected_node() could return an
+        incomplete/empty node. Waiting for our own listener to observe
+        config_complete_id - sent last, after MyNodeInfo/NodeInfo - gives
+        the processing loop's queue (registered earlier, when it started)
+        the same delivery-ordering guarantee real devices already rely on.
         """
         config_id = self._CONFIG_ID_MINIMAL if minimal else 42
 
-        # Synthesize MyNodeInfo
-        my_info = mesh_pb2.MyNodeInfo()
-        my_info.my_node_num = self._gateway_node_num
+        async def send_synthetic_config() -> None:
+            # Synthesize MyNodeInfo
+            my_info = mesh_pb2.MyNodeInfo()
+            my_info.my_node_num = self._gateway_node_num
 
-        from_radio_info = mesh_pb2.FromRadio()
-        from_radio_info.my_info.CopyFrom(my_info)
-        await self._notify_packet_stream_listeners(from_radio_info, sequential=True)
+            from_radio_info = mesh_pb2.FromRadio()
+            from_radio_info.my_info.CopyFrom(my_info)
+            await self._notify_packet_stream_listeners(from_radio_info, sequential=True)
 
-        # Synthesize a NodeInfo for the virtual gateway
-        node_info = mesh_pb2.NodeInfo()
-        node_info.num = self._gateway_node_num
-        node_info.user.id = f"!{self._gateway_node_num:08x}"
-        node_info.user.long_name = f"MQTT Gateway ({self._broker_host})"
-        node_info.user.short_name = "MQTT"
-        node_info.user.hw_model = mesh_pb2.HardwareModel.PORTDUINO
+            # Synthesize a NodeInfo for the virtual gateway
+            node_info = mesh_pb2.NodeInfo()
+            node_info.num = self._gateway_node_num
+            node_info.user.id = f"!{self._gateway_node_num:08x}"
+            node_info.user.long_name = f"MQTT Gateway ({self._broker_host})"
+            node_info.user.short_name = "MQTT"
+            node_info.user.hw_model = mesh_pb2.HardwareModel.PORTDUINO
 
-        from_radio_node = mesh_pb2.FromRadio()
-        from_radio_node.node_info.CopyFrom(node_info)
-        await self._notify_packet_stream_listeners(from_radio_node, sequential=True)
+            from_radio_node = mesh_pb2.FromRadio()
+            from_radio_node.node_info.CopyFrom(node_info)
+            await self._notify_packet_stream_listeners(from_radio_node, sequential=True)
 
-        # Signal config complete
-        from_radio_complete = mesh_pb2.FromRadio()
-        from_radio_complete.config_complete_id = config_id
-        await self._notify_packet_stream_listeners(from_radio_complete, sequential=True)
+            # Signal config complete
+            from_radio_complete = mesh_pb2.FromRadio()
+            from_radio_complete.config_complete_id = config_id
+            await self._notify_packet_stream_listeners(from_radio_complete, sequential=True)
 
-        return True
+        async for packet in self.listen(on_start=send_synthetic_config()):
+            if packet.HasField("config_complete_id") and packet.config_complete_id == config_id:
+                return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Helpers

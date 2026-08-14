@@ -598,8 +598,42 @@ if not hasattr(_conn_pkg, "ClientApiConnection"):
         def is_connected(self):
             raise NotImplementedError
 
+        async def listen(self, on_start=None):
+            from aiomeshtastic.connection.listener import (
+                ClientApiConnectionPacketStreamListener,
+            )
+
+            if not self.is_connected:
+                if on_start is not None:
+                    on_start.close()
+                raise ClientApiNotConnectedError
+            with ClientApiConnectionPacketStreamListener() as listener:
+                self._packet_stream_listeners.append(listener)
+                try:
+                    if on_start is not None:
+                        await on_start
+                    async for packet in listener:
+                        yield packet
+                finally:
+                    try:
+                        self._packet_stream_listeners.remove(listener)
+                    except ValueError:
+                        pass
+
         async def _notify_packet_stream_listeners(self, packet, *, sequential=False):
-            pass
+            async def notify(listener, new_packet):
+                try:
+                    await listener.notify(new_packet)
+                except Exception:
+                    pass
+
+            if sequential:
+                for listener in self._packet_stream_listeners:
+                    await notify(listener, packet)
+            else:
+                await asyncio.wait(
+                    [asyncio.create_task(notify(listener, packet)) for listener in self._packet_stream_listeners]
+                )
 
     _conn_pkg.ClientApiConnection = _StubClientApiConnection
 
@@ -718,13 +752,18 @@ class TestVirtualGatewayNodeSynthesis:
         """request_config() should synthesize a virtual gateway node with
         correct user fields (id, long_name, short_name, hw_model)."""
         conn = MqttConnection(broker_host="mqtt.mesh.net", broker_port=1883)
+        # request_config() now goes through listen(), which requires is_connected
+        conn._connected = True
+        conn._client = MagicMock()
 
-        # Capture packets sent to listeners
+        # Capture packets sent to listeners, while still actually delivering them -
+        # request_config() now awaits its own listener seeing config_complete_id.
         captured_packets = []
         original_notify = conn._notify_packet_stream_listeners
 
         async def capture_notify(packet, *, sequential=False):
             captured_packets.append(packet)
+            await original_notify(packet, sequential=sequential)
 
         conn._notify_packet_stream_listeners = capture_notify
 
