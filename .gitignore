@@ -56,6 +56,7 @@ coverage/
 .coverage
 htmlcov/
 .pytest_cache/
+.hypothesis/
 
 # =============================================================================
 # Linting / Type Checking
