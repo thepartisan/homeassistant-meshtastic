@@ -21,7 +21,13 @@ from .api import (
     EventMeshtasticApiTelemetryType,
     MeshtasticApiClientError,
 )
-from .const import CONF_OPTION_FILTER_NODES, DOMAIN, LOGGER
+from .const import (
+    CONF_CONNECTION_TYPE,
+    CONF_OPTION_FILTER_NODES,
+    DOMAIN,
+    LOGGER,
+    ConnectionType,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -185,6 +191,11 @@ class MeshtasticDataUpdateCoordinator(DataUpdateCoordinator):
 
         try:
             node_infos = await self.config_entry.runtime_data.client.async_get_all_nodes()
+
+            connection_type = self.config_entry.data.get(CONF_CONNECTION_TYPE)
+            if connection_type == ConnectionType.MQTT.value:
+                # MQTT connections have no fixed node list to opt into; track every node seen.
+                return {node_num: deepcopy(node_info) for node_num, node_info in node_infos.items()}
 
             filter_nodes = self.config_entry.options.get(CONF_OPTION_FILTER_NODES, [])
             filter_node_nums = [el["id"] for el in filter_nodes]

@@ -104,12 +104,12 @@ def _step_user_data_connection_serial_schema_factory(device: str = "") -> vol.Sc
 
 
 def _step_user_data_connection_mqtt_schema_factory(
-    host: str = "",
-    port: int = 1883,
-    username: str = "",
-    password: str = "",
-    tls: bool = False,
-    topic: str = "msh/US/2/e/#",
+    host: str = "mqtt.meshtastic.org",
+    port: int = 8883,
+    username: str = "meshdev",
+    password: str = "large4cats",
+    tls: bool = True,
+    topic: str = "msh/EU_868/2/e/#",
 ) -> vol.Schema:
     return vol.Schema(
         {
@@ -404,12 +404,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="manual_mqtt",
             data_schema=_step_user_data_connection_mqtt_schema_factory(
-                host=self.data.get(CONF_CONNECTION_MQTT_HOST, ""),
-                port=self.data.get(CONF_CONNECTION_MQTT_PORT, 1883),
-                username=self.data.get(CONF_CONNECTION_MQTT_USERNAME, ""),
-                password=self.data.get(CONF_CONNECTION_MQTT_PASSWORD, ""),
-                tls=self.data.get(CONF_CONNECTION_MQTT_TLS, False),
-                topic=self.data.get(CONF_CONNECTION_MQTT_TOPIC, "msh/US/2/e/#"),
+                host=self.data.get(CONF_CONNECTION_MQTT_HOST, "mqtt.meshtastic.org"),
+                port=self.data.get(CONF_CONNECTION_MQTT_PORT, 8883),
+                username=self.data.get(CONF_CONNECTION_MQTT_USERNAME, "meshdev"),
+                password=self.data.get(CONF_CONNECTION_MQTT_PASSWORD, "large4cats"),
+                tls=self.data.get(CONF_CONNECTION_MQTT_TLS, True),
+                topic=self.data.get(CONF_CONNECTION_MQTT_TOPIC, "msh/EU_868/2/e/#"),
             ),
             errors=errors,
         )
