@@ -133,6 +133,21 @@ def _step_mqtt_channels_schema_factory() -> vol.Schema:
     )
 
 
+def _parse_manual_node_id(value: str) -> int:
+    """Parse a manually entered node ID.
+
+    Accepts the "!xxxxxxxx" hex form Meshtastic displays node IDs in, plain
+    hex, or a decimal node number.
+    """
+    value = value.strip()
+    if value.startswith("!"):
+        return int(value[1:], 16)
+    try:
+        return int(value)
+    except ValueError:
+        return int(value, 16)
+
+
 NODE_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_OPTION_NODE): cv.string,
@@ -841,6 +856,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Simplified options flow for MQTT connections: pick which node IDs to track.
 
         Leaving the selection empty tracks every node seen on the subscribed topic.
+        The node list only reflects nodes known when this step is shown - a node
+        discovered after that won't appear until the dialog is reopened, so a
+        manual entry field is offered as a fallback that doesn't require it to
+        already be in the list.
         """
         errors: dict[str, str] = {}
 
@@ -864,13 +883,25 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         if user_input is not None:
             selected_ids = [int(node_id) for node_id in user_input.get(CONF_OPTION_FILTER_NODES, [])]
-            new_data = {
-                CONF_OPTION_FILTER_NODES: [
-                    {"id": node_id, "name": node_options.get(str(node_id), f"Unknown (id: {node_id})")}
-                    for node_id in selected_ids
-                ]
-            }
-            return self.async_create_entry(title="", data=new_data)
+
+            manual_node_id = user_input.get("manual_node_id", "").strip()
+            if manual_node_id:
+                try:
+                    parsed_id = _parse_manual_node_id(manual_node_id)
+                except ValueError:
+                    errors["manual_node_id"] = "invalid_node_id"
+                else:
+                    if parsed_id not in selected_ids:
+                        selected_ids.append(parsed_id)
+
+            if not errors:
+                new_data = {
+                    CONF_OPTION_FILTER_NODES: [
+                        {"id": node_id, "name": node_options.get(str(node_id), f"Unknown (id: {node_id})")}
+                        for node_id in selected_ids
+                    ]
+                }
+                return self.async_create_entry(title="", data=new_data)
 
         schema = vol.Schema(
             {
@@ -878,6 +909,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_OPTION_FILTER_NODES,
                     default=[str(el["id"]) for el in current_filter_nodes],
                 ): cv.multi_select(node_options),
+                vol.Optional("manual_node_id", default=""): cv.string,
             }
         )
         return self.async_show_form(

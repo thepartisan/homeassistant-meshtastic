@@ -862,3 +862,37 @@ class TestOptionsFlowChannelKeyParsing:
         assert errors == {}
         assert len(keys) == 2
         assert "NewChannel" in keys
+
+
+class TestParseManualNodeId:
+    """Test the manual node ID parsing logic used by the MQTT options flow's
+    "Add Node ID Manually" field (a fallback for nodes not yet in the
+    auto-populated selectable-nodes list).
+    """
+
+    @staticmethod
+    def _parse_manual_node_id(value: str) -> int:
+        """Replicate _parse_manual_node_id from config_flow.py."""
+        value = value.strip()
+        if value.startswith("!"):
+            return int(value[1:], 16)
+        try:
+            return int(value)
+        except ValueError:
+            return int(value, 16)
+
+    def test_parse_bang_hex_form(self):
+        assert self._parse_manual_node_id("!699c565c") == 0x699C565C
+
+    def test_parse_plain_decimal(self):
+        assert self._parse_manual_node_id("1774047580") == 1774047580
+
+    def test_parse_plain_hex_without_bang(self):
+        assert self._parse_manual_node_id("699c565c") == 0x699C565C
+
+    def test_parse_strips_whitespace(self):
+        assert self._parse_manual_node_id("  !699c565c  ") == 0x699C565C
+
+    def test_parse_invalid_raises_value_error(self):
+        with pytest.raises(ValueError):
+            self._parse_manual_node_id("not-a-node-id")

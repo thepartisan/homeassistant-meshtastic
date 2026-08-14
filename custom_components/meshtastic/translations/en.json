@@ -147,7 +147,11 @@
         "data": {
           "nodes": "Selected Nodes",
           "node": "Add Node",
-          "add_another_node": "Add another Node"
+          "add_another_node": "Add another Node",
+          "manual_node_id": "Add Node ID Manually"
+        },
+        "data_description": {
+          "manual_node_id": "For a node not yet in the list above (e.g. just discovered). Accepts decimal or !xxxxxxxx hex format. Leave blank to skip."
         },
         "sections": {
           "notify_platform": {
@@ -185,7 +189,8 @@
       "connection": "Unable to connect to the device.",
       "unknown": "Unknown error occurred.",
       "option_invalid": "Option configuration invalid",
-      "port_in_use": "Port already in use"
+      "port_in_use": "Port already in use",
+      "invalid_node_id": "Invalid node ID - use decimal (e.g. 1774047580) or !xxxxxxxx hex format"
     }
   },
   "services": {
