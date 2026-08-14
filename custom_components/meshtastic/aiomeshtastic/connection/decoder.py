@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from ..pki import decrypt_pki_payload  # noqa: TID252
 from ..protobuf import mesh_pb2, mqtt_pb2, portnums_pb2  # noqa: TID252
 
 if TYPE_CHECKING:
@@ -46,6 +47,7 @@ class MqttPacketDecoder:
         self,
         channel_keys: Sequence[Mapping[str, str]],
         allowed_from_node_ids: set[int] | None = None,
+        pki_identities: Sequence[Mapping[str, str]] | None = None,
     ) -> None:
         """Initialize the decoder with channel encryption keys.
 
@@ -60,6 +62,12 @@ class MqttPacketDecoder:
                 this set are dropped immediately, before decryption is attempted. The
                 sender ID is a cleartext MeshPacket field, so this filter is cheap and
                 works even for packets this decoder holds no channel key for.
+            pki_identities: A list of {"node_id": int, "private_key": base64_key} entries -
+                Curve25519 private keys this decoder can decrypt PKI (direct-message)
+                traffic addressed to, e.g. a virtual "sink" node paired with a real
+                device via the Meshtastic app's "Add Contact". Decrypting also requires
+                the sender's own public key, which isn't on the wire for PKI packets -
+                see _learn_sender_public_key().
         """
         self._channel_keys: dict[str, list[bytes]] = {}
         for entry in channel_keys:
@@ -72,6 +80,21 @@ class MqttPacketDecoder:
                 LOGGER.warning("Invalid base64 key for channel %s, skipping", channel)
 
         self._allowed_from_node_ids = allowed_from_node_ids
+
+        self._pki_private_keys: dict[int, bytes] = {}
+        for entry in pki_identities or []:
+            node_id = entry.get("node_id")
+            key_b64 = entry.get("private_key", "")
+            try:
+                self._pki_private_keys[int(node_id)] = base64.b64decode(key_b64)
+            except Exception:
+                LOGGER.warning("Invalid PKI identity entry for node %s, skipping", node_id)
+
+        # Sender node_id -> that node's own Curve25519 public key, learned from decrypted
+        # NodeInfo (User.public_key) broadcasts on the regular channel - never sent on the
+        # wire inside a PKI packet itself. Can also be seeded externally via
+        # learn_public_key() (e.g. a manually entered key).
+        self._node_public_keys: dict[int, bytes] = {}
 
     def prepare_key(self, raw_key: bytes) -> bytes:
         """Prepare an AES key with padding/expansion rules.
@@ -167,6 +190,35 @@ class MqttPacketDecoder:
         )
         return None
 
+    def learn_public_key(self, node_id: int, public_key: bytes) -> None:
+        """Record a node's own Curve25519 public key for future PKI decryption.
+
+        Called automatically for every decrypted NodeInfo (see
+        _maybe_learn_public_key()), and safe to call externally too (e.g. to
+        seed a manually entered public key for a node whose NodeInfo hasn't
+        been observed yet).
+        """
+        if len(public_key) == 32:
+            self._node_public_keys[node_id] = public_key
+
+    def _maybe_learn_public_key(self, packet: mesh_pb2.MeshPacket) -> None:
+        """Learn the sender's public key from a decoded NodeInfo packet, if present.
+
+        NodeInfo is broadcast channel-PSK encrypted (firmware excludes
+        NODEINFO_APP from PKC), so by the time this runs the packet's User
+        payload is already cleartext here - this is the only place a node's
+        own public key is ever observable on the wire.
+        """
+        if packet.decoded.portnum != portnums_pb2.PortNum.NODEINFO_APP:
+            return
+        try:
+            user = mesh_pb2.User()
+            user.ParseFromString(packet.decoded.payload)
+        except Exception:
+            return
+        if user.public_key:
+            self.learn_public_key(getattr(packet, "from"), user.public_key)
+
     def _is_plausible_data(self, candidate: bytes) -> bool:
         """Check whether decrypted bytes look like a real Data protobuf.
 
@@ -254,9 +306,17 @@ class MqttPacketDecoder:
 
         # If the packet has an encrypted payload, attempt decryption
         if mesh_packet.HasField("encrypted") and mesh_packet.encrypted:
-            return self._decrypt_mesh_packet(mesh_packet, channel)
+            if mesh_packet.pki_encrypted:
+                decoded_packet = self._decrypt_pki_mesh_packet(mesh_packet)
+            else:
+                decoded_packet = self._decrypt_mesh_packet(mesh_packet, channel)
+        else:
+            decoded_packet = mesh_packet
 
-        return mesh_packet
+        if decoded_packet is not None:
+            self._maybe_learn_public_key(decoded_packet)
+
+        return decoded_packet
 
     def _try_parse_service_envelope(
         self, payload: bytes
@@ -378,4 +438,45 @@ class MqttPacketDecoder:
             return packet
         except Exception:
             LOGGER.debug("Failed to parse decrypted payload as Data protobuf", exc_info=True)
+            return None
+
+    def _decrypt_pki_mesh_packet(self, packet: mesh_pb2.MeshPacket) -> mesh_pb2.MeshPacket | None:
+        """Attempt to decrypt a Curve25519 (PKI) encrypted MeshPacket.
+
+        Unlike channel-PSK decryption, this needs a matching pair of keys: our
+        private key for the destination identity the packet is addressed to
+        (a configured pki_identity), and the sender's own public key (learned
+        from a prior NodeInfo - see _maybe_learn_public_key()). Either being
+        unavailable means this packet can't be decrypted yet.
+
+        Args:
+            packet: The MeshPacket with an encrypted, pki_encrypted payload.
+
+        Returns:
+            The MeshPacket with decrypted decoded data, or None on failure.
+        """
+        our_private_key = self._pki_private_keys.get(packet.to)
+        if our_private_key is None:
+            LOGGER.debug("No PKI identity configured for destination node 0x%08x", packet.to)
+            return None
+
+        from_node_id = getattr(packet, "from")
+        their_public_key = self._node_public_keys.get(from_node_id)
+        if their_public_key is None:
+            LOGGER.debug("No known public key for sender 0x%08x yet, cannot PKI-decrypt", from_node_id)
+            return None
+
+        decrypted = decrypt_pki_payload(packet.encrypted, our_private_key, their_public_key, packet.id, from_node_id)
+        if decrypted is None:
+            LOGGER.debug("PKI decryption failed for packet from 0x%08x", from_node_id)
+            return None
+
+        try:
+            data = mesh_pb2.Data()
+            data.ParseFromString(decrypted)
+            packet.decoded.CopyFrom(data)
+            packet.ClearField("encrypted")
+            return packet
+        except Exception:
+            LOGGER.debug("Failed to parse PKI-decrypted payload as Data protobuf", exc_info=True)
             return None

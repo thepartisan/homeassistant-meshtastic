@@ -16,13 +16,15 @@ from homeassistant import config_entries, data_entry_flow
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, IntegrationError
 from homeassistant.helpers.selector import (
+    QrCodeSelector,
+    QrCodeSelectorConfig,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
 )
 
 from . import CONF_OPTION_WEB_CLIENT, CURRENT_CONFIG_VERSION_MINOR
-from .aiomeshtastic import TcpConnection
+from .aiomeshtastic import TcpConnection, pki
 from .api import (
     MeshtasticApiClient,
 )
@@ -32,7 +34,6 @@ from .const import (
     CONF_CONNECTION_MQTT_HOST,
     CONF_CONNECTION_MQTT_PASSWORD,
     CONF_CONNECTION_MQTT_PORT,
-    CONF_CONNECTION_MQTT_REGION,
     CONF_CONNECTION_MQTT_TLS,
     CONF_CONNECTION_MQTT_TOPIC,
     CONF_CONNECTION_MQTT_USERNAME,
@@ -42,6 +43,7 @@ from .const import (
     CONF_CONNECTION_TYPE,
     CONF_OPTION_ADD_ANOTHER_NODE,
     CONF_OPTION_FILTER_NODES,
+    CONF_OPTION_MQTT_PKI_IDENTITIES,
     CONF_OPTION_NODE,
     CONF_OPTION_NOTIFY_PLATFORM,
     CONF_OPTION_NOTIFY_PLATFORM_CHANNELS,
@@ -141,6 +143,31 @@ def _step_mqtt_devices_schema_factory() -> vol.Schema:
             vol.Optional("add_another_device", default=False): cv.boolean,
         }
     )
+
+
+def _build_mqtt_pki_schema(current_identities: list[dict[str, Any]]) -> vol.Schema:
+    """Build the PKI-identity management portion of the MQTT options schema.
+
+    A PKI identity is a virtual "sink" node whose private key this integration
+    holds, used to decrypt Curve25519 direct-message traffic a real device
+    encrypts to it once paired via the Meshtastic app's "Add Contact"
+    (scanning the QR code shown after creating an identity).
+    """
+    pki_labels = {str(entry["node_id"]): entry.get("name") or f"!{entry['node_id']:08x}" for entry in current_identities}
+
+    schema_dict: dict[Any, Any] = {
+        vol.Optional(CONF_OPTION_MQTT_PKI_IDENTITIES, default=list(pki_labels.keys())): cv.multi_select(pki_labels),
+    }
+    if pki_labels:
+        view_options = [SelectOptionDict(value=node_id, label=label) for node_id, label in pki_labels.items()]
+        schema_dict[vol.Optional("pki_view_identity", default="")] = SelectSelector(
+            SelectSelectorConfig(options=view_options)
+        )
+    schema_dict[vol.Optional("pki_node_id", default="")] = cv.string
+    schema_dict[vol.Optional("pki_name", default="")] = cv.string
+    schema_dict[vol.Optional("pki_private_key", default="")] = cv.string
+
+    return vol.Schema(schema_dict)
 
 
 def _parse_manual_node_id(value: str) -> int:
@@ -780,6 +807,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:  # noqa: ARG002
         self.options = {}
         self.nodes = None
+        # Staged state for the PKI identity QR-display step (async_step_mqtt_pki_identity):
+        # the identity being shown, and - only when showing a freshly created identity -
+        # the full options payload to persist once the user confirms they've saved the key.
+        self._pki_show_identity: dict[str, Any] | None = None
+        self._pki_pending_save_data: dict[str, Any] | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> dict[str, Any]:  # noqa: PLR0912
         errors: dict[str, str] = {}
@@ -920,6 +952,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         node_options = {
             str(el["id"]): el.get("name") or f"Unknown (id: {el['id']})" for el in current_filter_nodes
         }
+        current_pki_identities = self.config_entry.options.get(CONF_OPTION_MQTT_PKI_IDENTITIES, [])
 
         if user_input is not None:
             kept_ids = [int(node_id) for node_id in user_input.get(CONF_OPTION_FILTER_NODES, [])]
@@ -938,27 +971,120 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         str(parsed_id), f"Unknown (id: {parsed_id})"
                     )
 
+            kept_pki_ids = [int(node_id) for node_id in user_input.get(CONF_OPTION_MQTT_PKI_IDENTITIES, [])]
+            updated_pki_identities = [entry for entry in current_pki_identities if entry["node_id"] in kept_pki_ids]
+
+            view_identity_id = user_input.get("pki_view_identity", "").strip()
+            new_pki_node_id_raw = user_input.get("pki_node_id", "").strip()
+
+            new_pki_identity: dict[str, Any] | None = None
+            if not errors and new_pki_node_id_raw:
+                try:
+                    parsed_pki_node_id = _parse_manual_node_id(new_pki_node_id_raw)
+                except ValueError:
+                    errors["pki_node_id"] = "invalid_node_id"
+                else:
+                    pasted_key = user_input.get("pki_private_key", "").strip()
+                    if pasted_key:
+                        try:
+                            private_key = base64.b64decode(pasted_key)
+                            if len(private_key) != 32:
+                                raise ValueError
+                            public_key = pki.public_key_for_private_key(private_key)
+                        except Exception:
+                            errors["pki_private_key"] = "invalid_pki_key"
+                    else:
+                        private_key, public_key = pki.generate_keypair()
+
+                    if not errors:
+                        new_pki_identity = {
+                            "node_id": parsed_pki_node_id,
+                            "name": user_input.get("pki_name", "").strip(),
+                            "private_key": base64.b64encode(private_key).decode("ascii"),
+                            "public_key": base64.b64encode(public_key).decode("ascii"),
+                        }
+                        updated_pki_identities = [
+                            entry for entry in updated_pki_identities if entry["node_id"] != parsed_pki_node_id
+                        ] + [new_pki_identity]
+
             if not errors:
                 new_data = {
                     CONF_OPTION_FILTER_NODES: [
                         {"id": node_id, "name": node_options.get(str(node_id), f"Unknown (id: {node_id})")}
                         for node_id in kept_ids
-                    ]
+                    ],
+                    CONF_OPTION_MQTT_PKI_IDENTITIES: updated_pki_identities,
                 }
+
+                if new_pki_identity is not None:
+                    # A brand-new keypair only exists in memory until this entry is
+                    # actually saved - show it (and its QR code) first, and persist
+                    # only once the user confirms they've paired/backed it up.
+                    self._pki_show_identity = new_pki_identity
+                    self._pki_pending_save_data = new_data
+                    return await self.async_step_mqtt_pki_identity()
+
+                if view_identity_id:
+                    matching_identity = next(
+                        (e for e in current_pki_identities if str(e["node_id"]) == view_identity_id), None
+                    )
+                    if matching_identity is not None:
+                        # Viewing an existing identity doesn't change anything, so any
+                        # other edits made in this same submission are not saved -
+                        # submit them separately from a view request.
+                        self._pki_show_identity = matching_identity
+                        self._pki_pending_save_data = None
+                        return await self.async_step_mqtt_pki_identity()
+
                 return self.async_create_entry(title="", data=new_data)
 
-        schema = vol.Schema(
-            {
-                vol.Optional(
-                    CONF_OPTION_FILTER_NODES,
-                    default=[str(el["id"]) for el in current_filter_nodes],
-                ): cv.multi_select(node_options),
-                vol.Optional("manual_node_id", default=""): cv.string,
-                vol.Optional("manual_node_name", default=""): cv.string,
-            }
-        )
+        schema_dict = {
+            vol.Optional(
+                CONF_OPTION_FILTER_NODES,
+                default=[str(el["id"]) for el in current_filter_nodes],
+            ): cv.multi_select(node_options),
+            vol.Optional("manual_node_id", default=""): cv.string,
+            vol.Optional("manual_node_name", default=""): cv.string,
+        }
+        schema_dict.update(_build_mqtt_pki_schema(current_pki_identities).schema)
+        schema = vol.Schema(schema_dict)
         return self.async_show_form(
             step_id="init",
             data_schema=schema,
             errors=errors,
+        )
+
+    async def async_step_mqtt_pki_identity(self, user_input: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Show a PKI identity's public key and QR code (Add Contact in the Meshtastic app).
+
+        Reached either right after creating a new identity (in which case
+        confirming here is what actually persists it, see
+        _async_step_mqtt_options()) or when just viewing an existing one
+        (confirming here makes no changes).
+        """
+        identity = self._pki_show_identity
+        if identity is None:
+            return await self.async_step_init()
+
+        if user_input is not None:
+            pending_save_data = self._pki_pending_save_data
+            self._pki_show_identity = None
+            self._pki_pending_save_data = None
+            if pending_save_data is not None:
+                return self.async_create_entry(title="", data=pending_save_data)
+            return await self.async_step_init()
+
+        node_id = identity["node_id"]
+        public_key = base64.b64decode(identity["public_key"])
+        name = identity.get("name") or f"Node {node_id:08x}"
+        url = pki.shared_contact_url(node_id, name, public_key)
+
+        return self.async_show_form(
+            step_id="mqtt_pki_identity",
+            data_schema=vol.Schema({vol.Optional("qr_code"): QrCodeSelector(QrCodeSelectorConfig(data=url))}),
+            description_placeholders={
+                "node_id": f"!{node_id:08x}",
+                "name": name,
+                "public_key": identity["public_key"],
+            },
         )

@@ -163,11 +163,21 @@
           "node": "Add Node",
           "add_another_node": "Add another Node",
           "manual_node_id": "Add Node ID Manually",
-          "manual_node_name": "Device Name"
+          "manual_node_name": "Device Name",
+          "mqtt_pki_identities": "PKI Identities (Encrypted Position/Telemetry)",
+          "pki_view_identity": "View Existing Identity (QR Code)",
+          "pki_node_id": "Add Identity: Node ID",
+          "pki_name": "Add Identity: Name",
+          "pki_private_key": "Add Identity: Private Key (Base64, optional)"
         },
         "data_description": {
           "manual_node_id": "Accepts decimal or !xxxxxxxx hex format. Leave blank to skip. Uncheck an entry above to remove it instead.",
-          "manual_node_name": "Optional label for the node ID entered above"
+          "manual_node_name": "Optional label for the node ID entered above",
+          "mqtt_pki_identities": "Uncheck an entry to remove it. Removing an identity means traffic encrypted to it can no longer be decrypted.",
+          "pki_view_identity": "Select an identity and submit to show its public key and QR code again",
+          "pki_node_id": "A node ID that does not need to belong to a physical device - it's just a lookup key. Accepts decimal or !xxxxxxxx hex format. Leave blank to skip.",
+          "pki_name": "Optional label for this identity",
+          "pki_private_key": "Leave blank to generate a new Curve25519 keypair, or paste a base64-encoded 32-byte private key to reuse an existing one"
         },
         "sections": {
           "notify_platform": {
@@ -198,6 +208,12 @@
             }
           }
         }
+      },
+      "mqtt_pki_identity": {
+        "description": "**{name}** (`{node_id}`)\n\nPublic key: `{public_key}`\n\nIn the Meshtastic app, open the contact list and choose **Add Contact**, then scan this QR code to pair a device with this identity. Once paired, that device's position/telemetry will be encrypted so only Home Assistant can read it - back up the private key now (Home Assistant's config storage) if you rely on it, since removing this identity later makes anything already encrypted to it unreadable.",
+        "data": {
+          "qr_code": "QR Code"
+        }
       }
     },
     "error": {
@@ -206,7 +222,8 @@
       "unknown": "Unknown error occurred.",
       "option_invalid": "Option configuration invalid",
       "port_in_use": "Port already in use",
-      "invalid_node_id": "Invalid node ID - use decimal (e.g. 1774047580) or !xxxxxxxx hex format"
+      "invalid_node_id": "Invalid node ID - use decimal (e.g. 1774047580) or !xxxxxxxx hex format",
+      "invalid_pki_key": "Invalid private key - must be a base64-encoded 32-byte Curve25519 key"
     }
   },
   "services": {

@@ -36,6 +36,12 @@ CONF_OPTION_FILTER_NODES = "nodes"
 CONF_OPTION_NODE = "node"
 CONF_OPTION_ADD_ANOTHER_NODE = "add_another_node"
 
+# PKI (Curve25519) identities: virtual "sink" nodes this integration holds the private
+# key for, used to decrypt direct-message traffic a real device encrypts via the
+# Meshtastic app's "Add Contact" pairing. Stored in options (not data) since they're
+# meant to be created/viewed/changed after initial setup, the same way CONF_OPTION_FILTER_NODES is.
+CONF_OPTION_MQTT_PKI_IDENTITIES = "mqtt_pki_identities"
+
 CONF_OPTION_NOTIFY_PLATFORM = "notify_platform"
 CONF_OPTION_NOTIFY_PLATFORM_CHANNELS = "channels"
 CONF_OPTION_NOTIFY_PLATFORM_NODES = "nodes"
