@@ -28,14 +28,33 @@ if typing.TYPE_CHECKING:
     from .data import MeshtasticConfigEntry, MeshtasticData
 
 
+def resolve_mqtt_filter_node_nums(
+    entry: MeshtasticConfigEntry, known_node_nums: typing.Iterable[int]
+) -> set[int]:
+    """Return the node IDs an MQTT connection should track.
+
+    MQTT connections have no fixed node list to opt into up front, so an
+    unconfigured filter (the default) tracks every node seen. Once the user
+    has picked explicit node IDs via the options flow, only those are kept.
+    """
+    filter_nodes = entry.options.get(CONF_OPTION_FILTER_NODES, [])
+    if not filter_nodes:
+        return set(known_node_nums)
+    return {el["id"] for el in filter_nodes}
+
+
 def get_nodes(entry: MeshtasticConfigEntry) -> typing.Mapping[int, typing.Mapping[str, Any]]:
     if not entry.runtime_data.coordinator.data:
         return {}
 
     connection_type = entry.data.get(CONF_CONNECTION_TYPE)
     if connection_type == ConnectionType.MQTT.value:
-        # MQTT connections have no fixed node list to opt into; expose every tracked node.
-        return dict(entry.runtime_data.coordinator.data)
+        filter_node_nums = resolve_mqtt_filter_node_nums(entry, entry.runtime_data.coordinator.data.keys())
+        return {
+            node_num: node_info
+            for node_num, node_info in entry.runtime_data.coordinator.data.items()
+            if node_num in filter_node_nums
+        }
 
     filter_nodes = entry.options.get(CONF_OPTION_FILTER_NODES, [])
     filter_node_nums = [el["id"] for el in filter_nodes]

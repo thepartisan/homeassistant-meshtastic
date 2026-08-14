@@ -65,7 +65,7 @@ from .entity import (
     GatewayEntity,
     MeshtasticEntity,
 )
-from .helpers import fetch_meshtastic_hardware_names
+from .helpers import fetch_meshtastic_hardware_names, resolve_mqtt_filter_node_nums
 from .logbook import async_setup_message_logger
 from .meshtastic_tcp import async_setup_tcp_proxy, async_unload_tcp_proxy
 
@@ -191,7 +191,7 @@ async def _setup_meshtastic_devices(
     is_mqtt = connection_type == ConnectionType.MQTT.value
 
     if is_mqtt:
-        filter_node_nums = list(nodes.keys())
+        filter_node_nums = resolve_mqtt_filter_node_nums(entry, nodes.keys())
     else:
         filter_nodes = entry.options.get(CONF_OPTION_FILTER_NODES, [])
         filter_node_nums = [el["id"] for el in filter_nodes]

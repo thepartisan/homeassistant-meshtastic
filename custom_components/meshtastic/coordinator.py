@@ -28,6 +28,7 @@ from .const import (
     LOGGER,
     ConnectionType,
 )
+from .helpers import resolve_mqtt_filter_node_nums
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -194,8 +195,12 @@ class MeshtasticDataUpdateCoordinator(DataUpdateCoordinator):
 
             connection_type = self.config_entry.data.get(CONF_CONNECTION_TYPE)
             if connection_type == ConnectionType.MQTT.value:
-                # MQTT connections have no fixed node list to opt into; track every node seen.
-                return {node_num: deepcopy(node_info) for node_num, node_info in node_infos.items()}
+                mqtt_filter_node_nums = resolve_mqtt_filter_node_nums(self.config_entry, node_infos.keys())
+                return {
+                    node_num: deepcopy(node_info)
+                    for node_num, node_info in node_infos.items()
+                    if node_num in mqtt_filter_node_nums
+                }
 
             filter_nodes = self.config_entry.options.get(CONF_OPTION_FILTER_NODES, [])
             filter_node_nums = [el["id"] for el in filter_nodes]

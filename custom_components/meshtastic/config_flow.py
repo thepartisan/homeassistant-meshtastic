@@ -838,14 +838,50 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(step_id="init", data_schema=options_schema, errors=errors)
 
     async def _async_step_mqtt_options(self, user_input: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Simplified options flow for MQTT connections."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+        """Simplified options flow for MQTT connections: pick which node IDs to track.
 
-        # For MQTT, just show a minimal options form
+        Leaving the selection empty tracks every node seen on the subscribed topic.
+        """
+        errors: dict[str, str] = {}
+
+        known_nodes: Mapping[int, Any] = {}
+        if (
+            hasattr(self.config_entry, "runtime_data")
+            and self.config_entry.runtime_data
+            and self.config_entry.runtime_data.client
+        ):
+            known_nodes = await self.config_entry.runtime_data.client.async_get_all_nodes()
+
+        current_filter_nodes = self.config_entry.options.get(CONF_OPTION_FILTER_NODES, [])
+
+        node_options = {
+            str(node_id): node_info.get("user", {}).get("longName", f"Unknown (id: {node_id})")
+            for node_id, node_info in known_nodes.items()
+        }
+        # Keep previously selected nodes selectable even if not currently known
+        for el in current_filter_nodes:
+            node_options.setdefault(str(el["id"]), el.get("name", f"Unknown (id: {el['id']})"))
+
+        if user_input is not None:
+            selected_ids = [int(node_id) for node_id in user_input.get(CONF_OPTION_FILTER_NODES, [])]
+            new_data = {
+                CONF_OPTION_FILTER_NODES: [
+                    {"id": node_id, "name": node_options.get(str(node_id), f"Unknown (id: {node_id})")}
+                    for node_id in selected_ids
+                ]
+            }
+            return self.async_create_entry(title="", data=new_data)
+
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_OPTION_FILTER_NODES,
+                    default=[str(el["id"]) for el in current_filter_nodes],
+                ): cv.multi_select(node_options),
+            }
+        )
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({}),
+            data_schema=schema,
             errors=errors,
         )
