@@ -73,7 +73,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, MutableMapping
 
     from homeassistant.core import HomeAssistant
-    from homeassistant.helpers.device_registry import DeviceRegistry
+    from homeassistant.helpers.device_registry import DeviceEntry, DeviceRegistry
     from homeassistant.helpers.entity import Entity
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.DEVICE_TRACKER, Platform.NOTIFY]
@@ -205,7 +205,30 @@ async def _setup_meshtastic_devices(
 
         else:
             await _remove_meshtastic_device(device_registry, entry, node_id)
+
+    if is_mqtt and entry.options.get(CONF_OPTION_FILTER_NODES, []):
+        # MQTT's node database is rebuilt from scratch on every (re)connect, so a
+        # node the user has now filtered out - or simply hasn't been rediscovered
+        # yet this session - can leave a stale device (and its entities, via HA's
+        # device-removal cascade) behind from before the filter existed. Prune any
+        # device still attached to this entry that isn't a currently allowed node,
+        # regardless of whether it showed up in this session's node list above.
+        for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
+            stale_node_id = _node_id_from_device(device)
+            if stale_node_id is not None and stale_node_id not in filter_node_nums:
+                await _remove_meshtastic_device(device_registry, entry, stale_node_id)
+
     return gateway_node
+
+
+def _node_id_from_device(device: DeviceEntry) -> int | None:
+    for domain, identifier in device.identifiers:
+        if domain == DOMAIN:
+            try:
+                return int(identifier)
+            except ValueError:
+                return None
+    return None
 
 
 async def _remove_meshtastic_device(
