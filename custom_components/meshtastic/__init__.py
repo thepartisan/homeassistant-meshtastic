@@ -137,7 +137,7 @@ async def async_setup_entry(
     if coordinator.config_entry is None:
         coordinator.config_entry = entry
 
-    client = MeshtasticApiClient(entry.data, hass=hass, config_entry_id=entry.entry_id)
+    client = MeshtasticApiClient(entry.data, hass=hass, config_entry_id=entry.entry_id, options=entry.options)
 
     try:
         await client.connect()

@@ -291,3 +291,55 @@ def test_from_radio_output_validity(
     assert result_packet.id == packet_id
     assert result_packet.channel == channel
     assert result_packet.decoded.payload == payload
+
+
+# Property: allowed_from_node_ids filtering
+"""Packets from senders outside allowed_from_node_ids are dropped before
+decryption is attempted, while packets from allowed senders decode normally.
+"""
+
+
+def _build_service_envelope(from_id: int, channel_id: str = "LongFast") -> bytes:
+    packet = mesh_pb2.MeshPacket()
+    packet.__setattr__("from", from_id)
+    packet.id = 1
+    packet.channel = 0
+    packet.decoded.payload = b"hello"
+
+    envelope = mqtt_pb2.ServiceEnvelope()
+    envelope.packet.CopyFrom(packet)
+    envelope.channel_id = channel_id
+    envelope.gateway_id = "!deadbeef"
+    return envelope.SerializeToString()
+
+
+def test_disallowed_sender_is_dropped() -> None:
+    """A packet whose sender is not in allowed_from_node_ids is dropped."""
+    serialized = _build_service_envelope(from_id=0x11111111)
+    decoder = MqttPacketDecoder(channel_keys={}, allowed_from_node_ids={0x22222222})
+
+    result = decoder.decode_to_mesh_packet("msh/US/2/e/LongFast", serialized)
+
+    assert result is None
+
+
+def test_allowed_sender_is_decoded() -> None:
+    """A packet whose sender is in allowed_from_node_ids decodes normally."""
+    serialized = _build_service_envelope(from_id=0x11111111)
+    decoder = MqttPacketDecoder(channel_keys={}, allowed_from_node_ids={0x11111111, 0x22222222})
+
+    result = decoder.decode_to_mesh_packet("msh/US/2/e/LongFast", serialized)
+
+    assert result is not None
+    assert getattr(result, "from") == 0x11111111
+
+
+def test_no_filter_configured_decodes_everything() -> None:
+    """When allowed_from_node_ids is None (the default), no sender is filtered out."""
+    serialized = _build_service_envelope(from_id=0x11111111)
+    decoder = MqttPacketDecoder(channel_keys={})
+
+    result = decoder.decode_to_mesh_packet("msh/US/2/e/LongFast", serialized)
+
+    assert result is not None
+    assert getattr(result, "from") == 0x11111111

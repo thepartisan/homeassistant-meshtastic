@@ -36,11 +36,17 @@ class MqttPacketDecoder:
     AES-CTR decryption of encrypted payloads, and JSON message handling.
     """
 
-    def __init__(self, channel_keys: dict[str, str]) -> None:
+    def __init__(
+        self, channel_keys: dict[str, str], allowed_from_node_ids: set[int] | None = None
+    ) -> None:
         """Initialize the decoder with channel encryption keys.
 
         Args:
             channel_keys: Mapping of channel name to base64-encoded AES key.
+            allowed_from_node_ids: If given, packets whose sender ("from") is not in
+                this set are dropped immediately, before decryption is attempted. The
+                sender ID is a cleartext MeshPacket field, so this filter is cheap and
+                works even for packets this decoder holds no channel key for.
         """
         self._channel_keys: dict[str, bytes] = {}
         for channel, key_b64 in channel_keys.items():
@@ -49,6 +55,8 @@ class MqttPacketDecoder:
                 self._channel_keys[channel] = self.prepare_key(raw)
             except Exception:
                 LOGGER.warning("Invalid base64 key for channel %s, skipping", channel)
+
+        self._allowed_from_node_ids = allowed_from_node_ids
 
     def prepare_key(self, raw_key: bytes) -> bytes:
         """Prepare an AES key with padding/expansion rules.
@@ -188,6 +196,11 @@ class MqttPacketDecoder:
 
         if mesh_packet is None:
             LOGGER.debug("Failed to parse payload from topic '%s'", topic)
+            return None
+
+        # "from" is a cleartext MeshPacket field even when the payload is encrypted,
+        # so unwanted senders can be dropped before spending a decrypt attempt on them.
+        if self._allowed_from_node_ids is not None and getattr(mesh_packet, "from") not in self._allowed_from_node_ids:
             return None
 
         # If the packet has an encrypted payload, attempt decryption

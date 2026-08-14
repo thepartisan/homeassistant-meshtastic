@@ -44,6 +44,7 @@ class MqttConnection(ClientApiConnection):
         topic_pattern: str = "msh/US/2/e/#",
         channel_keys: dict[str, str] | None = None,
         region: str = "US",
+        filter_node_nums: set[int] | None = None,
     ) -> None:
         super().__init__()
         self._broker_host = broker_host
@@ -55,7 +56,7 @@ class MqttConnection(ClientApiConnection):
         self._channel_keys = channel_keys or {}
         self._region = region
 
-        self._decoder = MqttPacketDecoder(self._channel_keys)
+        self._decoder = MqttPacketDecoder(self._channel_keys, filter_node_nums)
         self._client: aiomqtt.Client | None = None
         self._connected = False
         self._gateway_node_num = self._generate_gateway_node_num()

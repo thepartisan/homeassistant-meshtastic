@@ -48,6 +48,7 @@ from .const import (
     CONF_CONNECTION_TCP_HOST,
     CONF_CONNECTION_TCP_PORT,
     CONF_CONNECTION_TYPE,
+    CONF_OPTION_FILTER_NODES,
     DOMAIN,
     LOGGER,
     ConnectionType,
@@ -105,6 +106,7 @@ class MeshtasticApiClient:
         config_entry_id: str | None,
         *,
         no_nodes: bool = False,
+        options: Mapping[str, Any] | None = None,
     ) -> None:
         self._logger = LOGGER.getChild(self.__class__.__name__)
         self._connected = asyncio.Event()
@@ -126,14 +128,17 @@ class MeshtasticApiClient:
         elif connection_type == ConnectionType.SERIAL.value:
             connection = AioSerialConnection(device=data[CONF_CONNECTION_SERIAL_PORT])
         elif connection_type == ConnectionType.MQTT.value:
+            filter_nodes = (options or {}).get(CONF_OPTION_FILTER_NODES, [])
+            mqtt_filter_node_nums = {el["id"] for el in filter_nodes} or None
             connection = AioMqttConnection(
                 broker_host=data[CONF_CONNECTION_MQTT_HOST],
                 broker_port=data[CONF_CONNECTION_MQTT_PORT],
                 username=data.get(CONF_CONNECTION_MQTT_USERNAME),
                 password=data.get(CONF_CONNECTION_MQTT_PASSWORD),
                 use_tls=data.get(CONF_CONNECTION_MQTT_TLS, False),
-                topic_pattern=data.get(CONF_CONNECTION_MQTT_TOPIC, "msh/EU_868/2/e/#"),
+                topic_pattern=data.get(CONF_CONNECTION_MQTT_TOPIC, "msh/EU_868/2/e/LongFast/#"),
                 channel_keys=data.get(CONF_CONNECTION_MQTT_CHANNEL_KEYS, {}),
+                filter_node_nums=mqtt_filter_node_nums,
             )
         else:
             msg = f"Unsupported connection type {connection_type}"

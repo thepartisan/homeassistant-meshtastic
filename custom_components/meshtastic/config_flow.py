@@ -109,7 +109,7 @@ def _step_user_data_connection_mqtt_schema_factory(
     username: str = "meshdev",
     password: str = "large4cats",
     tls: bool = True,
-    topic: str = "msh/EU_868/2/e/#",
+    topic: str = "msh/EU_868/2/e/LongFast/#",
 ) -> vol.Schema:
     return vol.Schema(
         {
@@ -409,7 +409,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 username=self.data.get(CONF_CONNECTION_MQTT_USERNAME, "meshdev"),
                 password=self.data.get(CONF_CONNECTION_MQTT_PASSWORD, "large4cats"),
                 tls=self.data.get(CONF_CONNECTION_MQTT_TLS, True),
-                topic=self.data.get(CONF_CONNECTION_MQTT_TOPIC, "msh/EU_868/2/e/#"),
+                topic=self.data.get(CONF_CONNECTION_MQTT_TOPIC, "msh/EU_868/2/e/LongFast/#"),
             ),
             errors=errors,
         )
