@@ -471,7 +471,7 @@ class TestMqttConnectionSendPacket:
         fake = _FakeClient()
         conn = MqttConnection(
             broker_host="localhost",
-            channel_keys={"LongFast": "AQ=="},
+            channel_keys=[{"name": "LongFast", "key": "AQ=="}],
             region="US",
         )
 

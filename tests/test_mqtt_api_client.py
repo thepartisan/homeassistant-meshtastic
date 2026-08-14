@@ -663,7 +663,7 @@ class TestConnectionTypeRouting:
             "mqtt_password": "pass",
             "mqtt_tls": True,
             "mqtt_topic": "msh/EU/2/e/#",
-            "mqtt_channel_keys": {"LongFast": "AQ=="},
+            "mqtt_channel_keys": [{"name": "LongFast", "key": "AQ=="}],
         }
 
         # Replicate the routing logic from api.py
@@ -676,7 +676,7 @@ class TestConnectionTypeRouting:
             password=config_data.get("mqtt_password"),
             use_tls=config_data.get("mqtt_tls", False),
             topic_pattern=config_data.get("mqtt_topic", "msh/US/2/e/#"),
-            channel_keys=config_data.get("mqtt_channel_keys", {}),
+            channel_keys=config_data.get("mqtt_channel_keys", []),
         )
 
         assert isinstance(conn, MqttConnection)
@@ -686,7 +686,7 @@ class TestConnectionTypeRouting:
         assert conn._password == "pass"
         assert conn._use_tls is True
         assert conn._topic_pattern == "msh/EU/2/e/#"
-        assert conn._channel_keys == {"LongFast": "AQ=="}
+        assert conn._channel_keys == [{"name": "LongFast", "key": "AQ=="}]
 
     def test_connection_type_enum_has_mqtt(self):
         """ConnectionType enum should include MQTT with value 'mqtt'."""
@@ -841,7 +841,7 @@ class TestServiceRoutingMqttMode:
         fake = _FakeClient()
         conn = MqttConnection(
             broker_host="localhost",
-            channel_keys={"LongFast": "AQ=="},
+            channel_keys=[{"name": "LongFast", "key": "AQ=="}],
             region="US",
         )
 

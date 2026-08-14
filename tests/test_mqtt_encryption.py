@@ -10,10 +10,11 @@ produce the original plaintext.
 
 import base64
 
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from hypothesis import given, settings, strategies as st
-
 from aiomeshtastic.connection.decoder import MqttPacketDecoder
+from aiomeshtastic.protobuf import mesh_pb2, portnums_pb2
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 # ---------------------------------------------------------------------------
 # Hypothesis strategies
@@ -27,8 +28,23 @@ _aes_key = st.one_of(
     st.binary(min_size=32, max_size=32),
 )
 
-# Plaintext: arbitrary bytes up to Meshtastic DATA_PAYLOAD_LEN (233 bytes).
-_plaintext = st.binary(min_size=1, max_size=233)
+# decrypt_payload() now only returns a result that parses as a plausible Data
+# protobuf (see decoder.py) - it's used to pick the right key among several
+# candidates for a shared channel name. So the round-trip plaintext has to be
+# a serialized Data message with a recognized PortNum, not arbitrary bytes.
+_valid_portnum = st.sampled_from(list(portnums_pb2.PortNum.values()))
+_data_payload_bytes = st.binary(min_size=0, max_size=200)
+
+
+@st.composite
+def _valid_data_plaintext(draw: st.DrawFn) -> bytes:
+    data = mesh_pb2.Data()
+    data.portnum = draw(_valid_portnum)
+    data.payload = draw(_data_payload_bytes)
+    return data.SerializeToString()
+
+
+_plaintext = _valid_data_plaintext()
 
 # Channel name used for key lookup.
 _TEST_CHANNEL = "TestChannel"
@@ -58,7 +74,7 @@ def test_aes_ctr_encryption_decryption_round_trip(
 
     # -- Set up a decoder with the generated key for our test channel --
     key_b64 = base64.b64encode(key).decode()
-    decoder = MqttPacketDecoder(channel_keys={_TEST_CHANNEL: key_b64})
+    decoder = MqttPacketDecoder(channel_keys=[{"name": _TEST_CHANNEL, "key": key_b64}])
 
     # -- Build the nonce using the decoder's own method --
     nonce = decoder.build_nonce(packet_id, from_node_id)
@@ -101,7 +117,7 @@ def test_prepare_key_produces_valid_aes_key_length(raw_key: bytes) -> None:
     """prepare_key must always return a 16- or 32-byte key, following the
     Meshtastic key-preparation rules."""
 
-    decoder = MqttPacketDecoder(channel_keys={})
+    decoder = MqttPacketDecoder(channel_keys=[])
     prepared = decoder.prepare_key(raw_key)
 
     # 1. Result must be exactly 16 or 32 bytes (valid AES key sizes).
@@ -152,7 +168,7 @@ def test_nonce_construction_produces_16_bytes_with_correct_layout(
     """build_nonce must return exactly 16 bytes with packet_id in the first 8
     bytes (little-endian) and from_node_id in the last 8 bytes (little-endian)."""
 
-    decoder = MqttPacketDecoder(channel_keys={})
+    decoder = MqttPacketDecoder(channel_keys=[])
     nonce = decoder.build_nonce(packet_id, from_node_id)
 
     # 1. Result must be exactly 16 bytes.

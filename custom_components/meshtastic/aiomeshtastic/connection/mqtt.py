@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Mapping, Sequence
 
 import aiomqtt
 
@@ -43,7 +43,7 @@ class MqttConnection(ClientApiConnection):
         password: str | None = None,
         use_tls: bool = False,
         topic_pattern: str = "msh/US/2/e/#",
-        channel_keys: dict[str, str] | None = None,
+        channel_keys: Sequence[Mapping[str, str]] | None = None,
         region: str = "US",
         filter_node_nums: set[int] | None = None,
     ) -> None:
@@ -54,7 +54,7 @@ class MqttConnection(ClientApiConnection):
         self._password = password
         self._use_tls = use_tls
         self._topic_pattern = topic_pattern
-        self._channel_keys = channel_keys or {}
+        self._channel_keys = list(channel_keys or [])
         self._region = region
 
         self._decoder = MqttPacketDecoder(self._channel_keys, filter_node_nums)
@@ -292,12 +292,14 @@ class MqttConnection(ClientApiConnection):
     def _channel_name_for_index(self, channel_index: int) -> str:
         """Map a channel index to a channel name.
 
-        Falls back to the first configured channel key name, or
-        ``"LongFast"`` as the default.
+        Falls back to the first configured channel name, or ``"LongFast"``
+        as the default. channel_keys may list the same name more than once
+        (different keys for the same name), so duplicates are collapsed
+        before indexing.
         """
         # Channel index 0 is typically the primary channel
-        if self._channel_keys:
-            names = list(self._channel_keys.keys())
+        names = list(dict.fromkeys(entry.get("name", "") for entry in self._channel_keys))
+        if names:
             if channel_index < len(names):
                 return names[channel_index]
             return names[0]

@@ -9,11 +9,10 @@ produce an equivalent MeshPacket with the same ``from``, ``to``, ``id``,
 ``channel``, and ``decoded.payload`` fields.
 """
 
-from hypothesis import given, settings, strategies as st
-
 from aiomeshtastic.connection.decoder import MqttPacketDecoder
 from aiomeshtastic.protobuf import mesh_pb2, mqtt_pb2
-
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 # ---------------------------------------------------------------------------
 # Hypothesis strategies
@@ -82,7 +81,7 @@ def test_service_envelope_round_trip(
     # -- Decode through MqttPacketDecoder --
     # Use a topic that matches the pattern msh/US/2/e/{channel_id}
     topic = f"msh/US/2/e/{channel_id}"
-    decoder = MqttPacketDecoder(channel_keys={})
+    decoder = MqttPacketDecoder(channel_keys=[])
     result = decoder.decode_to_mesh_packet(topic, serialized)
 
     # -- Verify round-trip equivalence --
@@ -140,7 +139,7 @@ def test_direct_mesh_packet_fallback_parsing(
 
     # -- Decode through MqttPacketDecoder --
     topic = "msh/US/2/e/LongFast"
-    decoder = MqttPacketDecoder(channel_keys={})
+    decoder = MqttPacketDecoder(channel_keys=[])
     result = decoder.decode_to_mesh_packet(topic, serialized)
 
     # -- Verify the decoder extracted an equivalent MeshPacket --
@@ -209,7 +208,7 @@ def test_json_message_field_extraction(
     topic = f"msh/US/2/json/{channel_name}"
 
     # -- Decode through MqttPacketDecoder --
-    decoder = MqttPacketDecoder(channel_keys={})
+    decoder = MqttPacketDecoder(channel_keys=[])
     result = decoder.decode_to_mesh_packet(topic, payload_bytes)
 
     # -- Verify the extracted MeshPacket fields --
@@ -273,7 +272,7 @@ def test_from_radio_output_validity(
 
     # -- Decode through MqttPacketDecoder --
     topic = f"msh/US/2/e/{channel_id}"
-    decoder = MqttPacketDecoder(channel_keys={})
+    decoder = MqttPacketDecoder(channel_keys=[])
     mesh_packet = decoder.decode_to_mesh_packet(topic, serialized)
     assert mesh_packet is not None, "Decoder returned None for a valid ServiceEnvelope"
 
@@ -316,7 +315,7 @@ def _build_service_envelope(from_id: int, channel_id: str = "LongFast") -> bytes
 def test_disallowed_sender_is_dropped() -> None:
     """A packet whose sender is not in allowed_from_node_ids is dropped."""
     serialized = _build_service_envelope(from_id=0x11111111)
-    decoder = MqttPacketDecoder(channel_keys={}, allowed_from_node_ids={0x22222222})
+    decoder = MqttPacketDecoder(channel_keys=[], allowed_from_node_ids={0x22222222})
 
     result = decoder.decode_to_mesh_packet("msh/US/2/e/LongFast", serialized)
 
@@ -326,7 +325,7 @@ def test_disallowed_sender_is_dropped() -> None:
 def test_allowed_sender_is_decoded() -> None:
     """A packet whose sender is in allowed_from_node_ids decodes normally."""
     serialized = _build_service_envelope(from_id=0x11111111)
-    decoder = MqttPacketDecoder(channel_keys={}, allowed_from_node_ids={0x11111111, 0x22222222})
+    decoder = MqttPacketDecoder(channel_keys=[], allowed_from_node_ids={0x11111111, 0x22222222})
 
     result = decoder.decode_to_mesh_packet("msh/US/2/e/LongFast", serialized)
 
@@ -337,9 +336,95 @@ def test_allowed_sender_is_decoded() -> None:
 def test_no_filter_configured_decodes_everything() -> None:
     """When allowed_from_node_ids is None (the default), no sender is filtered out."""
     serialized = _build_service_envelope(from_id=0x11111111)
-    decoder = MqttPacketDecoder(channel_keys={})
+    decoder = MqttPacketDecoder(channel_keys=[])
 
     result = decoder.decode_to_mesh_packet("msh/US/2/e/LongFast", serialized)
 
     assert result is not None
     assert getattr(result, "from") == 0x11111111
+
+
+# Property: multiple keys registered under the same channel name
+"""A channel name is just a user-chosen label, not a unique namespace - two
+different private groups can both be named "LongFast" with different PSKs.
+When several keys are registered under one name, decrypt_payload() must try
+each until one produces a plausible Data protobuf, rather than only ever
+using the first (or last) one configured.
+"""
+
+import base64
+
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+
+def _build_encrypted_envelope(
+    from_id: int, key: bytes, channel_id: str = "LongFast", payload: bytes = b"hello"
+) -> bytes:
+    """Build a ServiceEnvelope whose packet is AES-CTR encrypted with `key`."""
+    packet_id = 1
+
+    data = mesh_pb2.Data()
+    data.portnum = 1  # TEXT_MESSAGE_APP
+    data.payload = payload
+    plaintext = data.SerializeToString()
+
+    nonce = packet_id.to_bytes(8, "little") + from_id.to_bytes(8, "little")
+    cipher = Cipher(algorithms.AES(key), modes.CTR(nonce))
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    packet = mesh_pb2.MeshPacket()
+    packet.__setattr__("from", from_id)
+    packet.id = packet_id
+    packet.channel = 0
+    packet.encrypted = ciphertext
+
+    envelope = mqtt_pb2.ServiceEnvelope()
+    envelope.packet.CopyFrom(packet)
+    envelope.channel_id = channel_id
+    envelope.gateway_id = "!deadbeef"
+    return envelope.SerializeToString()
+
+
+def test_multiple_keys_same_channel_name_tries_each_until_one_works() -> None:
+    """Two different groups both named "LongFast", each with its own key -
+    a packet encrypted with the second group's key must still decrypt.
+    """
+    key_a = base64.b64encode(b"\x01" * 16).decode()  # group A's key
+    key_b = base64.b64encode(b"\x02" * 16).decode()  # group B's key
+    decoder = MqttPacketDecoder(
+        channel_keys=[
+            {"name": "LongFast", "key": key_a},
+            {"name": "LongFast", "key": key_b},
+        ]
+    )
+
+    serialized = _build_encrypted_envelope(from_id=0x33333333, key=b"\x02" * 16, payload=b"from group B")
+
+    result = decoder.decode_to_mesh_packet("msh/US/2/e/LongFast", serialized)
+
+    assert result is not None, "Neither registered key decrypted the packet"
+    assert result.decoded.payload == b"from group B"
+    assert not result.HasField("encrypted")
+
+
+def test_wrong_key_among_multiple_fails_gracefully() -> None:
+    """If a packet was encrypted with a key not registered for its channel
+    name (even though other keys are registered for that name), it's
+    dropped rather than yielding garbage decoded data.
+    """
+    key_a = base64.b64encode(b"\x01" * 16).decode()
+    key_b = base64.b64encode(b"\x02" * 16).decode()
+    decoder = MqttPacketDecoder(
+        channel_keys=[
+            {"name": "LongFast", "key": key_a},
+            {"name": "LongFast", "key": key_b},
+        ]
+    )
+
+    # Encrypted with a third key never registered for this channel name.
+    serialized = _build_encrypted_envelope(from_id=0x44444444, key=b"\x03" * 16)
+
+    result = decoder.decode_to_mesh_packet("msh/US/2/e/LongFast", serialized)
+
+    assert result is None
