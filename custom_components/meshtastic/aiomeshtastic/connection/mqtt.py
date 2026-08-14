@@ -75,12 +75,16 @@ class MqttConnection(ClientApiConnection):
             import ssl
             tls_context = ssl.create_default_context()
 
+        # Some brokers (e.g. the public mqtt.meshtastic.org) reject connections with
+        # CONNACK "identifier rejected" unless given an explicit, short client ID;
+        # aiomqtt/paho otherwise auto-generate a long, hostname-suffixed one.
         self._client = aiomqtt.Client(
             hostname=self._broker_host,
             port=self._broker_port,
             username=self._username,
             password=self._password,
             tls_context=tls_context,
+            identifier=f"hamesh{self._gateway_node_num:08x}",
         )
         await self._client.__aenter__()
         self._connected = True
