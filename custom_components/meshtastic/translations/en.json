@@ -79,16 +79,29 @@
         }
       },
       "mqtt_channels": {
-        "description": "Add channel encryption keys for decrypting Meshtastic mesh traffic. The default key (AQ==) decrypts the default LongFast channel.",
+        "description": "Add channel encryption keys for decrypting Meshtastic mesh traffic. The default key (AQ==) decrypts the default LongFast channel. A channel name is just a label, not a unique ID - if you have multiple private groups that happen to share a name (e.g. two different 'LongFast' channels with different keys), add the same name again with its own key.",
         "data": {
           "channel_name": "Channel Name",
           "channel_key": "Encryption Key (Base64)",
           "add_another_channel": "Add another channel"
         },
         "data_description": {
-          "channel_name": "Name of the Meshtastic channel (e.g. LongFast)",
+          "channel_name": "Name of the Meshtastic channel (e.g. LongFast) - can be entered more than once with a different key",
           "channel_key": "Base64-encoded encryption key for this channel",
           "add_another_channel": "Add another channel key pair"
+        }
+      },
+      "mqtt_devices": {
+        "description": "Optionally add specific node IDs to track, entered manually. Leave blank and continue to track every node whose traffic decrypts with a configured channel key.",
+        "data": {
+          "device_id": "Node ID",
+          "device_name": "Device Name",
+          "add_another_device": "Add another device"
+        },
+        "data_description": {
+          "device_id": "Accepts !xxxxxxxx hex, plain hex, or decimal. Leave blank to finish without adding a device.",
+          "device_name": "Optional label for this device",
+          "add_another_device": "Add another node ID"
         }
       },
       "reconfigure": {
@@ -134,7 +147,8 @@
       "reconfigure_not_possible": "Reconfiguration currently not possible",
       "port_in_use": "Port already in use",
       "invalid_channel_key": "Invalid base64 channel key",
-      "mqtt_auth_failed": "MQTT authentication failed"
+      "mqtt_auth_failed": "MQTT authentication failed",
+      "invalid_node_id": "Invalid node ID - use decimal (e.g. 1774047580) or !xxxxxxxx hex format"
     },
     "abort": {
       "already_configured": "Meshtastic device is already configured"
@@ -148,10 +162,12 @@
           "nodes": "Selected Nodes",
           "node": "Add Node",
           "add_another_node": "Add another Node",
-          "manual_node_id": "Add Node ID Manually"
+          "manual_node_id": "Add Node ID Manually",
+          "manual_node_name": "Device Name"
         },
         "data_description": {
-          "manual_node_id": "For a node not yet in the list above (e.g. just discovered). Accepts decimal or !xxxxxxxx hex format. Leave blank to skip."
+          "manual_node_id": "Accepts decimal or !xxxxxxxx hex format. Leave blank to skip. Uncheck an entry above to remove it instead.",
+          "manual_node_name": "Optional label for the node ID entered above"
         },
         "sections": {
           "notify_platform": {

@@ -133,6 +133,16 @@ def _step_mqtt_channels_schema_factory() -> vol.Schema:
     )
 
 
+def _step_mqtt_devices_schema_factory() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Optional("device_id", default=""): cv.string,
+            vol.Optional("device_name", default=""): cv.string,
+            vol.Optional("add_another_device", default=False): cv.boolean,
+        }
+    )
+
+
 def _parse_manual_node_id(value: str) -> int:
     """Parse a manually entered node ID.
 
@@ -312,7 +322,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.user_input_from_step_user: dict = None
         self.data = {}
         self.options = {}
-        self._mqtt_channel_keys: dict[str, str] = {}
+        self._mqtt_channel_keys: list[dict[str, str]] = []
+        self._mqtt_devices: list[dict[str, Any]] = []
 
         self._load_nodes_task: asyncio.Task | None = None
 
@@ -413,7 +424,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not errors:
                 self.data.update(user_input)
-                self._mqtt_channel_keys = {}
+                self._mqtt_channel_keys = []
+                self._mqtt_devices = []
                 return await self.async_step_mqtt_channels()
 
         return self.async_show_form(
@@ -430,6 +442,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_mqtt_channels(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Collect channel name + key pairs.
+
+        A channel name is just a label, not a unique identifier - different
+        private groups can share a name with different keys - so the same
+        name may be entered more than once here, each with its own key.
+        """
         errors: dict[str, str] = {}
         if user_input is not None:
             channel_name = user_input.get("channel_name", "").strip()
@@ -443,10 +461,44 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["channel_key"] = "invalid_channel_key"
 
                 if not errors:
-                    self._mqtt_channel_keys[channel_name] = channel_key
+                    self._mqtt_channel_keys.append({"name": channel_name, "key": channel_key})
 
                     if user_input.get("add_another_channel", False):
                         return await self.async_step_mqtt_channels()
+
+            if not errors:
+                return await self.async_step_mqtt_devices()
+
+        return self.async_show_form(
+            step_id="mqtt_channels",
+            data_schema=_step_mqtt_channels_schema_factory(),
+            errors=errors,
+        )
+
+    async def async_step_mqtt_devices(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Collect the node IDs to track, entered manually one at a time.
+
+        Leaving this step without adding any device tracks every node whose
+        packets successfully decrypt with one of the configured channel keys.
+        """
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            device_id_raw = user_input.get("device_id", "").strip()
+            device_name = user_input.get("device_name", "").strip()
+
+            if device_id_raw:
+                try:
+                    parsed_id = _parse_manual_node_id(device_id_raw)
+                except ValueError:
+                    errors["device_id"] = "invalid_node_id"
+
+                if not errors:
+                    self._mqtt_devices.append(
+                        {"id": parsed_id, "name": device_name or f"Unknown (id: {parsed_id})"}
+                    )
+
+                    if user_input.get("add_another_device", False):
+                        return await self.async_step_mqtt_devices()
 
             if not errors:
                 self.data[CONF_CONNECTION_MQTT_CHANNEL_KEYS] = self._mqtt_channel_keys
@@ -469,12 +521,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "unknown"
 
                 if not errors:
-                    self.options = {CONF_OPTION_FILTER_NODES: []}
+                    self.options = {CONF_OPTION_FILTER_NODES: self._mqtt_devices}
                     return await self._finish_steps()
 
         return self.async_show_form(
-            step_id="mqtt_channels",
-            data_schema=_step_mqtt_channels_schema_factory(),
+            step_id="mqtt_devices",
+            data_schema=_step_mqtt_devices_schema_factory(),
             errors=errors,
         )
 
@@ -855,50 +907,42 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def _async_step_mqtt_options(self, user_input: dict[str, Any] | None = None) -> dict[str, Any]:
         """Simplified options flow for MQTT connections: pick which node IDs to track.
 
-        Leaving the selection empty tracks every node seen on the subscribed topic.
-        The node list only reflects nodes known when this step is shown - a node
-        discovered after that won't appear until the dialog is reopened, so a
-        manual entry field is offered as a fallback that doesn't require it to
-        already be in the list.
+        Leaving the list empty tracks every node whose packets decrypt with a
+        configured channel key. The multi-select only ever lists devices you've
+        already added (here or during setup) - not live broker traffic - so
+        checking/unchecking entries only ever removes something you explicitly
+        added; adding a new device is always via manual entry, never a dropdown
+        of auto-discovered nodes.
         """
         errors: dict[str, str] = {}
 
-        known_nodes: Mapping[int, Any] = {}
-        if (
-            hasattr(self.config_entry, "runtime_data")
-            and self.config_entry.runtime_data
-            and self.config_entry.runtime_data.client
-        ):
-            known_nodes = await self.config_entry.runtime_data.client.async_get_all_nodes()
-
         current_filter_nodes = self.config_entry.options.get(CONF_OPTION_FILTER_NODES, [])
-
         node_options = {
-            str(node_id): node_info.get("user", {}).get("longName", f"Unknown (id: {node_id})")
-            for node_id, node_info in known_nodes.items()
+            str(el["id"]): el.get("name") or f"Unknown (id: {el['id']})" for el in current_filter_nodes
         }
-        # Keep previously selected nodes selectable even if not currently known
-        for el in current_filter_nodes:
-            node_options.setdefault(str(el["id"]), el.get("name", f"Unknown (id: {el['id']})"))
 
         if user_input is not None:
-            selected_ids = [int(node_id) for node_id in user_input.get(CONF_OPTION_FILTER_NODES, [])]
+            kept_ids = [int(node_id) for node_id in user_input.get(CONF_OPTION_FILTER_NODES, [])]
 
             manual_node_id = user_input.get("manual_node_id", "").strip()
+            manual_node_name = user_input.get("manual_node_name", "").strip()
             if manual_node_id:
                 try:
                     parsed_id = _parse_manual_node_id(manual_node_id)
                 except ValueError:
                     errors["manual_node_id"] = "invalid_node_id"
                 else:
-                    if parsed_id not in selected_ids:
-                        selected_ids.append(parsed_id)
+                    if parsed_id not in kept_ids:
+                        kept_ids.append(parsed_id)
+                    node_options[str(parsed_id)] = manual_node_name or node_options.get(
+                        str(parsed_id), f"Unknown (id: {parsed_id})"
+                    )
 
             if not errors:
                 new_data = {
                     CONF_OPTION_FILTER_NODES: [
                         {"id": node_id, "name": node_options.get(str(node_id), f"Unknown (id: {node_id})")}
-                        for node_id in selected_ids
+                        for node_id in kept_ids
                     ]
                 }
                 return self.async_create_entry(title="", data=new_data)
@@ -910,6 +954,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     default=[str(el["id"]) for el in current_filter_nodes],
                 ): cv.multi_select(node_options),
                 vol.Optional("manual_node_id", default=""): cv.string,
+                vol.Optional("manual_node_name", default=""): cv.string,
             }
         )
         return self.async_show_form(

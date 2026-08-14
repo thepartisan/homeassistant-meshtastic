@@ -658,7 +658,10 @@ class TestConfigFlowHappyPath:
         data = dict(mqtt_input)
         data[CONF_CONNECTION_MQTT_HOST] = host
         data[CONF_CONNECTION_TYPE] = "mqtt"
-        data[CONF_CONNECTION_MQTT_CHANNEL_KEYS] = {}
+        # A channel name is a label, not a unique ID, so keys are stored as a
+        # list of {"name", "key"} entries - the same name can appear more than
+        # once with a different key (see decoder.py).
+        data[CONF_CONNECTION_MQTT_CHANNEL_KEYS] = []
 
         # Step 2: Add channel keys
         for ch_input in channel_inputs:
@@ -670,7 +673,7 @@ class TestConfigFlowHappyPath:
                 return {CONF_MQTT_CHANNEL_KEY: "mqtt_invalid_channel_key"}, None
             if not _validate_base64_key(ch_key):
                 return {CONF_MQTT_CHANNEL_KEY: "mqtt_invalid_base64_key"}, None
-            data[CONF_CONNECTION_MQTT_CHANNEL_KEYS][ch_name] = ch_key
+            data[CONF_CONNECTION_MQTT_CHANNEL_KEYS].append({"name": ch_name, "key": ch_key})
 
         # Step 3: Test connection
         if not connection_succeeds:
@@ -701,7 +704,7 @@ class TestConfigFlowHappyPath:
         assert data[CONF_CONNECTION_TYPE] == "mqtt"
         assert data[CONF_CONNECTION_MQTT_HOST] == "mqtt.meshtastic.org"
         assert data[CONF_CONNECTION_MQTT_PORT] == 1883
-        assert data[CONF_CONNECTION_MQTT_CHANNEL_KEYS] == {"LongFast": "AQ=="}
+        assert data[CONF_CONNECTION_MQTT_CHANNEL_KEYS] == [{"name": "LongFast", "key": "AQ=="}]
 
     def test_happy_path_multiple_channels(self):
         """Full flow with multiple channels."""
@@ -719,6 +722,28 @@ class TestConfigFlowHappyPath:
         )
         assert errors is None
         assert len(data[CONF_CONNECTION_MQTT_CHANNEL_KEYS]) == 2
+
+    def test_happy_path_duplicate_channel_name_different_keys(self):
+        """Two different private groups sharing a channel name (e.g. both
+        named "LongFast") must both be kept, each with its own key - not
+        collapsed into a single entry.
+        """
+        errors, data = self._simulate_mqtt_flow(
+            mqtt_input={
+                CONF_CONNECTION_MQTT_HOST: "broker.local",
+                CONF_CONNECTION_MQTT_PORT: 8883,
+            },
+            channel_inputs=[
+                {CONF_MQTT_CHANNEL_NAME: "LongFast", CONF_MQTT_CHANNEL_KEY: "AQ=="},
+                {CONF_MQTT_CHANNEL_NAME: "LongFast", CONF_MQTT_CHANNEL_KEY: "dGVzdA=="},
+            ],
+            connection_succeeds=True,
+        )
+        assert errors is None
+        assert data[CONF_CONNECTION_MQTT_CHANNEL_KEYS] == [
+            {"name": "LongFast", "key": "AQ=="},
+            {"name": "LongFast", "key": "dGVzdA=="},
+        ]
 
 
     def test_connection_failure_returns_error(self):
