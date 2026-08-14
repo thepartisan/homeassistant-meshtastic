@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import datetime
+import logging
 from collections import defaultdict
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -87,6 +88,10 @@ _remove_listeners: MutableMapping[str, list[Callable[[], None]]] = defaultdict(l
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    # Force debug logging so MQTT/decoder diagnostics show up without a logger: block
+    # in configuration.yaml. Child loggers inherit this level from the package logger.
+    LOGGER.setLevel(logging.DEBUG)
+
     component = hass.data[DATA_COMPONENT] = EntityComponent[MeshtasticEntity](LOGGER, DOMAIN, hass, SCAN_INTERVAL)
 
     await component.async_setup(config)

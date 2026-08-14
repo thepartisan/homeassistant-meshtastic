@@ -132,7 +132,7 @@ class MeshtasticApiClient:
                 username=data.get(CONF_CONNECTION_MQTT_USERNAME),
                 password=data.get(CONF_CONNECTION_MQTT_PASSWORD),
                 use_tls=data.get(CONF_CONNECTION_MQTT_TLS, False),
-                topic_pattern=data.get(CONF_CONNECTION_MQTT_TOPIC, "msh/US/2/e/#"),
+                topic_pattern=data.get(CONF_CONNECTION_MQTT_TOPIC, "msh/EU_868/2/e/#"),
                 channel_keys=data.get(CONF_CONNECTION_MQTT_CHANNEL_KEYS, {}),
             )
         else:
