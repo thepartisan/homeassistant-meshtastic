@@ -36,11 +36,12 @@ CONF_OPTION_FILTER_NODES = "nodes"
 CONF_OPTION_NODE = "node"
 CONF_OPTION_ADD_ANOTHER_NODE = "add_another_node"
 
-# PKI (Curve25519) identities: virtual "sink" nodes this integration holds the private
-# key for, used to decrypt direct-message traffic a real device encrypts via the
-# Meshtastic app's "Add Contact" pairing. Stored in options (not data) since they're
-# meant to be created/viewed/changed after initial setup, the same way CONF_OPTION_FILTER_NODES is.
-CONF_OPTION_MQTT_PKI_IDENTITIES = "mqtt_pki_identities"
+# Static pre-shared AES key for decrypting Position/Telemetry payloads that carry an
+# extra encryption layer on top of the normal channel-PSK one, matching the firmware
+# fork's channel-7 static telemetry key (see StaticTelemetryKey.h). Stored in options
+# (not data) since it's meant to be set/changed after initial setup, the same way
+# CONF_OPTION_FILTER_NODES is.
+CONF_OPTION_MQTT_STATIC_TELEMETRY_KEY = "mqtt_static_telemetry_key"
 
 CONF_OPTION_NOTIFY_PLATFORM = "notify_platform"
 CONF_OPTION_NOTIFY_PLATFORM_CHANNELS = "channels"

@@ -49,7 +49,7 @@ from .const import (
     CONF_CONNECTION_TCP_PORT,
     CONF_CONNECTION_TYPE,
     CONF_OPTION_FILTER_NODES,
-    CONF_OPTION_MQTT_PKI_IDENTITIES,
+    CONF_OPTION_MQTT_STATIC_TELEMETRY_KEY,
     DOMAIN,
     LOGGER,
     ConnectionType,
@@ -131,7 +131,7 @@ class MeshtasticApiClient:
         elif connection_type == ConnectionType.MQTT.value:
             filter_nodes = (options or {}).get(CONF_OPTION_FILTER_NODES, [])
             mqtt_filter_node_nums = {el["id"] for el in filter_nodes} or None
-            pki_identities = (options or {}).get(CONF_OPTION_MQTT_PKI_IDENTITIES, [])
+            static_telemetry_key = (options or {}).get(CONF_OPTION_MQTT_STATIC_TELEMETRY_KEY)
             connection = AioMqttConnection(
                 broker_host=data[CONF_CONNECTION_MQTT_HOST],
                 broker_port=data[CONF_CONNECTION_MQTT_PORT],
@@ -141,7 +141,7 @@ class MeshtasticApiClient:
                 topic_pattern=data.get(CONF_CONNECTION_MQTT_TOPIC, "msh/EU_868/2/e/LongFast/#"),
                 channel_keys=data.get(CONF_CONNECTION_MQTT_CHANNEL_KEYS, []),
                 filter_node_nums=mqtt_filter_node_nums,
-                pki_identities=pki_identities,
+                static_telemetry_key=static_telemetry_key,
             )
         else:
             msg = f"Unsupported connection type {connection_type}"

@@ -26,9 +26,6 @@ from .errors import (
 
 LOGGER = logging.getLogger(__name__)
 
-# Type indicators used in MQTT topic paths, mirroring decoder._TYPE_INDICATORS
-_TOPIC_TYPE_INDICATORS = {"e", "c", "json"}
-
 
 class MqttConnection(ClientApiConnection):
     """MQTT-based connection to a Meshtastic mesh network.
@@ -49,7 +46,7 @@ class MqttConnection(ClientApiConnection):
         channel_keys: Sequence[Mapping[str, str]] | None = None,
         region: str = "US",
         filter_node_nums: set[int] | None = None,
-        pki_identities: Sequence[Mapping[str, str]] | None = None,
+        static_telemetry_key: str | None = None,
     ) -> None:
         super().__init__()
         self._broker_host = broker_host
@@ -61,7 +58,7 @@ class MqttConnection(ClientApiConnection):
         self._channel_keys = list(channel_keys or [])
         self._region = region
 
-        self._decoder = MqttPacketDecoder(self._channel_keys, filter_node_nums, pki_identities)
+        self._decoder = MqttPacketDecoder(self._channel_keys, filter_node_nums, static_telemetry_key)
         self._client: aiomqtt.Client | None = None
         self._connected = False
         self._gateway_node_num = self._generate_gateway_node_num()
@@ -100,17 +97,17 @@ class MqttConnection(ClientApiConnection):
         await self._client.__aenter__()
         self._connected = True
 
-        for pattern in self._subscribed_topic_patterns():
-            await self._client.subscribe(pattern)
-            self._logger.debug("Subscribed to topic pattern: %s", pattern)
+        await self._client.subscribe(self._topic_pattern)
+        self._logger.debug(
+            "Subscribed to topic pattern: %s", self._topic_pattern
+        )
 
     async def _disconnect(self) -> None:
         """Unsubscribe from topics and close the MQTT connection."""
         if self._client is not None:
             try:
                 if self._connected:
-                    for pattern in self._subscribed_topic_patterns():
-                        await self._client.unsubscribe(pattern)
+                    await self._client.unsubscribe(self._topic_pattern)
             except Exception:  # noqa: BLE001
                 self._logger.debug("Error unsubscribing", exc_info=True)
             try:
@@ -292,31 +289,6 @@ class MqttConnection(ClientApiConnection):
         if node_num == 0 or node_num == 0xFFFFFFFF:
             node_num = 0x004D5101  # fallback
         return node_num
-
-    def _subscribed_topic_patterns(self) -> list[str]:
-        """Return the MQTT topic patterns to subscribe/unsubscribe.
-
-        PKI (Curve25519 direct-message) packets are published under a
-        channel-id segment that's the literal string "PKI" instead of a
-        channel name (firmware's ``MQTT::onSend``), so a topic pattern scoped
-        to one named channel - e.g. the default ``msh/EU_868/2/e/LongFast/#``
-        - won't match them. If the configured pattern targets a specific
-        channel segment, also subscribe to its "PKI" sibling; if that segment
-        is already a wildcard, it's covered already and no second
-        subscription is needed.
-        """
-        patterns = [self._topic_pattern]
-
-        parts = self._topic_pattern.split("/")
-        for i, part in enumerate(parts):
-            if part in _TOPIC_TYPE_INDICATORS and i >= 1 and parts[i - 1] == "2" and i + 1 < len(parts):
-                channel_segment = parts[i + 1]
-                if channel_segment not in ("+", "#", "PKI"):
-                    pki_parts = [*parts[: i + 1], "PKI", *parts[i + 2 :]]
-                    patterns.append("/".join(pki_parts))
-                break
-
-        return patterns
 
     def _channel_name_for_index(self, channel_index: int) -> str:
         """Map a channel index to a channel name.
