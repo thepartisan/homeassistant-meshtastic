@@ -28,7 +28,7 @@ from .const import (
     LOGGER,
     ConnectionType,
 )
-from .helpers import resolve_mqtt_filter_node_nums
+from .helpers import build_placeholder_node_info, resolve_mqtt_filter_node_nums
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -196,11 +196,22 @@ class MeshtasticDataUpdateCoordinator(DataUpdateCoordinator):
             connection_type = self.config_entry.data.get(CONF_CONNECTION_TYPE)
             if connection_type == ConnectionType.MQTT.value:
                 mqtt_filter_node_nums = resolve_mqtt_filter_node_nums(self.config_entry, node_infos.keys())
-                return {
+                result = {
                     node_num: deepcopy(node_info)
                     for node_num, node_info in node_infos.items()
                     if node_num in mqtt_filter_node_nums
                 }
+                # Manually added nodes that haven't sent any traffic yet aren't in
+                # node_infos (MQTT's node database is built purely from received
+                # packets) - seed a placeholder so they still get a device/entities
+                # instead of silently waiting for first traffic.
+                filter_nodes = self.config_entry.options.get(CONF_OPTION_FILTER_NODES, [])
+                filter_node_names = {el["id"]: el.get("name") for el in filter_nodes}
+                for node_num in mqtt_filter_node_nums:
+                    if node_num not in result:
+                        name = filter_node_names.get(node_num) or f"Unknown (id: {node_num})"
+                        result[node_num] = build_placeholder_node_info(node_num, name)
+                return result
 
             filter_nodes = self.config_entry.options.get(CONF_OPTION_FILTER_NODES, [])
             filter_node_nums = [el["id"] for el in filter_nodes]

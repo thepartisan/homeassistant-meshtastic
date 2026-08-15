@@ -43,6 +43,27 @@ def resolve_mqtt_filter_node_nums(
     return {el["id"] for el in filter_nodes}
 
 
+def build_placeholder_node_info(node_id: int, name: str) -> dict[str, Any]:
+    """Synthetic node-info dict for a manually configured MQTT node that hasn't
+    sent any traffic yet.
+
+    MQTT's node database is populated exclusively from received packets, so a
+    node the user has explicitly added to the filter list but that hasn't
+    transmitted this session would otherwise have no device/entities at all.
+    This stands in until real data (via EVENT_MESHTASTIC_API_NODE_UPDATED)
+    replaces it, using only fields the device/entity setup code already reads.
+    """
+    return {
+        "num": node_id,
+        "user": {
+            "id": f"!{node_id:08x}",
+            "longName": name,
+            "shortName": name[:4] if name else f"{node_id:08x}"[-4:],
+            "hwModel": "UNSET",
+        },
+    }
+
+
 def get_nodes(entry: MeshtasticConfigEntry) -> typing.Mapping[int, typing.Mapping[str, Any]]:
     if not entry.runtime_data.coordinator.data:
         return {}

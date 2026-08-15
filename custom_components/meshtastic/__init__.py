@@ -65,7 +65,7 @@ from .entity import (
     GatewayEntity,
     MeshtasticEntity,
 )
-from .helpers import fetch_meshtastic_hardware_names, resolve_mqtt_filter_node_nums
+from .helpers import build_placeholder_node_info, fetch_meshtastic_hardware_names, resolve_mqtt_filter_node_nums
 from .logbook import async_setup_message_logger
 from .meshtastic_tcp import async_setup_tcp_proxy, async_unload_tcp_proxy
 
@@ -205,6 +205,21 @@ async def _setup_meshtastic_devices(
 
         else:
             await _remove_meshtastic_device(device_registry, entry, node_id)
+
+    if is_mqtt:
+        # Manually added nodes that haven't sent any traffic yet aren't in
+        # `nodes` (MQTT's node database is built purely from received packets) -
+        # create a placeholder device for them too, so they show up immediately
+        # instead of only after first traffic.
+        filter_nodes = entry.options.get(CONF_OPTION_FILTER_NODES, [])
+        filter_node_names = {el["id"]: el.get("name") for el in filter_nodes}
+        for node_id in filter_node_nums:
+            if node_id not in nodes:
+                name = filter_node_names.get(node_id) or f"Unknown (id: {node_id})"
+                placeholder_node = build_placeholder_node_info(node_id, name)
+                await _setup_meshtastic_device(
+                    client, device_hardware_names, device_registry, entry, gateway_node, placeholder_node, node_id
+                )
 
     if is_mqtt and entry.options.get(CONF_OPTION_FILTER_NODES, []):
         # MQTT's node database is rebuilt from scratch on every (re)connect, so a
