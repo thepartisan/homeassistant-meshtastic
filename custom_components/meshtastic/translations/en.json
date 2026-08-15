@@ -102,7 +102,7 @@
         "data_description": {
           "device_id": "Accepts !xxxxxxxx hex, plain hex, or decimal. Leave blank to finish without adding a device.",
           "device_name": "Optional label for this device",
-          "device_static_key": "Optional, per-device. Must match this node's firmware channel 7 PSK (role Secondary) - see StaticTelemetryKey.h. Decrypts an extra encryption layer on this node's Position/Telemetry payloads. Leave blank to disable for this device.",
+          "device_static_key": "Optional, per-device. Must match this node's firmware channel 7 PSK (any role - just set a key) - see StaticTelemetryKey.h. Decrypts an extra encryption layer on this node's Position/Telemetry payloads. Leave blank to disable for this device.",
           "add_another_device": "Add another node ID"
         }
       },
@@ -171,7 +171,7 @@
         "data_description": {
           "manual_node_id": "Accepts decimal or !xxxxxxxx hex format. Leave blank to skip. Uncheck an entry above to remove it instead.",
           "manual_node_name": "Optional label for the node ID entered above",
-          "manual_static_key": "Optional, per-device - applies to the node ID entered above. Must match that node's firmware channel 7 PSK (role Secondary) - see StaticTelemetryKey.h. Decrypts an extra encryption layer on its Position/Telemetry payloads. Leave blank to leave unchanged; re-enter the node ID with a new key to change it."
+          "manual_static_key": "Optional, per-device - applies to the node ID entered above. Must match that node's firmware channel 7 PSK (any role - just set a key) - see StaticTelemetryKey.h. Decrypts an extra encryption layer on its Position/Telemetry payloads. Leave blank to leave unchanged; re-enter the node ID with a new key to change it."
         },
         "sections": {
           "notify_platform": {
