@@ -46,7 +46,7 @@ class MqttConnection(ClientApiConnection):
         channel_keys: Sequence[Mapping[str, str]] | None = None,
         region: str = "US",
         filter_node_nums: set[int] | None = None,
-        static_telemetry_key: str | None = None,
+        static_telemetry_keys: Mapping[int, str] | None = None,
     ) -> None:
         super().__init__()
         self._broker_host = broker_host
@@ -58,7 +58,7 @@ class MqttConnection(ClientApiConnection):
         self._channel_keys = list(channel_keys or [])
         self._region = region
 
-        self._decoder = MqttPacketDecoder(self._channel_keys, filter_node_nums, static_telemetry_key)
+        self._decoder = MqttPacketDecoder(self._channel_keys, filter_node_nums, static_telemetry_keys)
         self._client: aiomqtt.Client | None = None
         self._connected = False
         self._gateway_node_num = self._generate_gateway_node_num()

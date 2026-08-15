@@ -36,12 +36,13 @@ CONF_OPTION_FILTER_NODES = "nodes"
 CONF_OPTION_NODE = "node"
 CONF_OPTION_ADD_ANOTHER_NODE = "add_another_node"
 
-# Static pre-shared AES key for decrypting Position/Telemetry payloads that carry an
-# extra encryption layer on top of the normal channel-PSK one, matching the firmware
-# fork's channel-7 static telemetry key (see StaticTelemetryKey.h). Stored in options
-# (not data) since it's meant to be set/changed after initial setup, the same way
-# CONF_OPTION_FILTER_NODES is.
-CONF_OPTION_MQTT_STATIC_TELEMETRY_KEY = "mqtt_static_telemetry_key"
+# Per-device static pre-shared AES key field, stored inside each entry of
+# CONF_OPTION_FILTER_NODES (alongside "id"/"name"). Decrypts an extra encryption
+# layer on Position/Telemetry payloads from that specific node, matching the
+# firmware fork's channel-7 static telemetry key (see StaticTelemetryKey.h).
+# Different nodes may use different keys, so this lives per-device rather than
+# as a single connection-wide option.
+CONF_OPTION_FILTER_NODE_STATIC_KEY = "static_key"
 
 CONF_OPTION_NOTIFY_PLATFORM = "notify_platform"
 CONF_OPTION_NOTIFY_PLATFORM_CHANNELS = "channels"

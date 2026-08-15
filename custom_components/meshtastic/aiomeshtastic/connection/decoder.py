@@ -34,7 +34,7 @@ _TYPE_INDICATORS = {"e", "c", "json"}
 # same name actually decrypted a given packet (see decrypt_payload()).
 _VALID_PORT_NUMS = frozenset(portnums_pb2.PortNum.values())
 
-# Portnums the static telemetry key (see MqttPacketDecoder.__init__) applies to -
+# Portnums the static telemetry keys (see MqttPacketDecoder.__init__) apply to -
 # must match the firmware's StaticTelemetryKey.h exactly.
 _STATIC_TELEMETRY_KEY_PORT_NUMS = frozenset(
     {portnums_pb2.PortNum.POSITION_APP, portnums_pb2.PortNum.TELEMETRY_APP}
@@ -57,7 +57,7 @@ class MqttPacketDecoder:
         self,
         channel_keys: Sequence[Mapping[str, str]],
         allowed_from_node_ids: set[int] | None = None,
-        static_telemetry_key: str | None = None,
+        static_telemetry_keys: Mapping[int, str] | None = None,
     ) -> None:
         """Initialize the decoder with channel encryption keys.
 
@@ -72,11 +72,14 @@ class MqttPacketDecoder:
                 this set are dropped immediately, before decryption is attempted. The
                 sender ID is a cleartext MeshPacket field, so this filter is cheap and
                 works even for packets this decoder holds no channel key for.
-            static_telemetry_key: A base64-encoded AES key matching the firmware's
-                channel-7 static telemetry key (see StaticTelemetryKey.h in the
-                firmware fork). Position/Telemetry payloads are AES-CTR encrypted
-                with this key as an extra layer *inside* the already channel-PSK
-                decrypted Data.payload - see _maybe_decrypt_static_telemetry_payload().
+            static_telemetry_keys: A mapping of node_id -> base64-encoded AES key,
+                matching the firmware's channel-7 static telemetry key (see
+                StaticTelemetryKey.h in the firmware fork). Position/Telemetry
+                payloads from that specific node are AES-CTR encrypted with its key
+                as an extra layer *inside* the already channel-PSK decrypted
+                Data.payload - see _maybe_decrypt_static_telemetry_payload(). Keys
+                are per-node since different nodes may be configured with different
+                static telemetry keys.
         """
         self._channel_keys: dict[str, list[bytes]] = {}
         for entry in channel_keys:
@@ -90,12 +93,14 @@ class MqttPacketDecoder:
 
         self._allowed_from_node_ids = allowed_from_node_ids
 
-        self._static_telemetry_key: bytes | None = None
-        if static_telemetry_key:
+        self._static_telemetry_keys: dict[int, bytes] = {}
+        for node_id, key_b64 in (static_telemetry_keys or {}).items():
+            if not key_b64:
+                continue
             try:
-                self._static_telemetry_key = self.prepare_key(base64.b64decode(static_telemetry_key))
+                self._static_telemetry_keys[node_id] = self.prepare_key(base64.b64decode(key_b64))
             except Exception:
-                LOGGER.warning("Invalid base64 static telemetry key, ignoring")
+                LOGGER.warning("Invalid base64 static telemetry key for node %s, ignoring", node_id)
 
     def prepare_key(self, raw_key: bytes) -> bytes:
         """Prepare an AES key with padding/expansion rules.
@@ -206,29 +211,33 @@ class MqttPacketDecoder:
             return data.portnum in _VALID_PORT_NUMS
 
     def _maybe_decrypt_static_telemetry_payload(self, packet: mesh_pb2.MeshPacket) -> None:
-        """Try the static telemetry key on a Position/Telemetry Data.payload.
+        """Try the sender's static telemetry key on a Position/Telemetry Data.payload.
 
         This mirrors the firmware's StaticTelemetryKey.h: Position/Telemetry
         payloads may carry an *extra* AES-CTR encryption layer (applied by the
         sender before the normal channel-PSK layer, which this decoder has
         already peeled off by the time this runs). If the payload already
         parses as the expected message type, it's left untouched (handles
-        stock senders, or the static key not being configured) - only on a
-        parse failure is a decrypt attempt made, and only the decrypted result
-        is kept if *that* parses.
+        stock senders, or no static key configured for this sender) - only on
+        a parse failure is a decrypt attempt made, and only the decrypted
+        result is kept if *that* parses. The key used is looked up by the
+        packet's sender ID, since different nodes may have different keys.
         """
-        if self._static_telemetry_key is None:
-            return
         portnum = packet.decoded.portnum
         if portnum not in _STATIC_TELEMETRY_KEY_PORT_NUMS:
             return
+
+        from_node_id = getattr(packet, "from")
+        key = self._static_telemetry_keys.get(from_node_id)
+        if key is None:
+            return
+
         if self._is_plausible_static_payload(portnum, packet.decoded.payload):
             return
 
-        from_node_id = getattr(packet, "from")
         nonce = self.build_nonce(packet.id, from_node_id)
         try:
-            cipher = Cipher(algorithms.AES(self._static_telemetry_key), modes.CTR(nonce))
+            cipher = Cipher(algorithms.AES(key), modes.CTR(nonce))
             decryptor = cipher.decryptor()
             candidate = decryptor.update(packet.decoded.payload) + decryptor.finalize()
         except Exception:

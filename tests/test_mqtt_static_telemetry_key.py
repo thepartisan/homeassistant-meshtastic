@@ -1,9 +1,12 @@
-# Feature: meshtastic-static-telemetry-key, static-key decrypt layer for Position/Telemetry
+# Feature: meshtastic-static-telemetry-key, per-device static-key decrypt layer
+# for Position/Telemetry
 """Tests for MqttPacketDecoder's static telemetry key: an optional extra AES-CTR
 layer applied to Position/Telemetry Data.payload bytes, matching the firmware
 fork's channel-7 static telemetry key (StaticTelemetryKey.h). Unlike channel-PSK
 decryption this is a second pass applied *after* the normal channel decrypt
-already recovered a plausible Data message.
+already recovered a plausible Data message, and the key used is looked up by
+the packet's sender node ID - different nodes may be configured with
+different static telemetry keys (or none at all).
 """
 
 from __future__ import annotations
@@ -21,12 +24,15 @@ _CHANNEL_KEY_B64 = base64.b64encode(b"\x01").decode()  # expands to the default 
 _STATIC_KEY = b"\x11" * 32
 _STATIC_KEY_B64 = base64.b64encode(_STATIC_KEY).decode()
 _CHANNEL_NAME = "LongFast"
+_NODE_ID = 0x11223344
 
 
-def _make_decoder(static_telemetry_key: str | None = _STATIC_KEY_B64) -> MqttPacketDecoder:
+def _make_decoder(static_telemetry_keys: dict[int, str] | None = None) -> MqttPacketDecoder:
+    if static_telemetry_keys is None:
+        static_telemetry_keys = {_NODE_ID: _STATIC_KEY_B64}
     return MqttPacketDecoder(
         channel_keys=[{"name": _CHANNEL_NAME, "key": _CHANNEL_KEY_B64}],
-        static_telemetry_key=static_telemetry_key,
+        static_telemetry_keys=static_telemetry_keys,
     )
 
 
@@ -78,8 +84,8 @@ def test_static_key_decrypts_double_encrypted_position() -> None:
     position = mesh_pb2.Position(latitude_i=407128000, longitude_i=-740060000)
     plaintext = position.SerializeToString()
 
-    ciphertext = _static_key_encrypt(_STATIC_KEY, decoder, plaintext, 42, 0x11223344)
-    envelope = _build_envelope(decoder, ciphertext, portnums_pb2.PortNum.POSITION_APP, 42, 0x11223344)
+    ciphertext = _static_key_encrypt(_STATIC_KEY, decoder, plaintext, 42, _NODE_ID)
+    envelope = _build_envelope(decoder, ciphertext, portnums_pb2.PortNum.POSITION_APP, 42, _NODE_ID)
 
     result = decoder.decode_to_mesh_packet(_TOPIC, envelope)
 
@@ -98,8 +104,8 @@ def test_static_key_decrypts_double_encrypted_telemetry() -> None:
     telemetry = telemetry_pb2.Telemetry(time=1700000000, device_metrics=telemetry_pb2.DeviceMetrics(battery_level=80))
     plaintext = telemetry.SerializeToString()
 
-    ciphertext = _static_key_encrypt(_STATIC_KEY, decoder, plaintext, 43, 0x11223344)
-    envelope = _build_envelope(decoder, ciphertext, portnums_pb2.PortNum.TELEMETRY_APP, 43, 0x11223344)
+    ciphertext = _static_key_encrypt(_STATIC_KEY, decoder, plaintext, 43, _NODE_ID)
+    envelope = _build_envelope(decoder, ciphertext, portnums_pb2.PortNum.TELEMETRY_APP, 43, _NODE_ID)
 
     result = decoder.decode_to_mesh_packet(_TOPIC, envelope)
 
@@ -109,13 +115,13 @@ def test_static_key_decrypts_double_encrypted_telemetry() -> None:
 
 def test_plaintext_position_from_stock_node_passes_through_unchanged() -> None:
     """A stock (unmodified) sender's plaintext Position must still work when
-    the receiver has a static key configured - the decoder should recognize
-    it's already valid and not touch it."""
+    the receiver has a static key configured for that sender - the decoder
+    should recognize it's already valid and not touch it."""
     decoder = _make_decoder()
     position = mesh_pb2.Position(latitude_i=1, longitude_i=2)
     plaintext = position.SerializeToString()
 
-    envelope = _build_envelope(decoder, plaintext, portnums_pb2.PortNum.POSITION_APP, 1, 0xAABBCCDD)
+    envelope = _build_envelope(decoder, plaintext, portnums_pb2.PortNum.POSITION_APP, 1, _NODE_ID)
     result = decoder.decode_to_mesh_packet(_TOPIC, envelope)
 
     assert result is not None
@@ -123,12 +129,12 @@ def test_plaintext_position_from_stock_node_passes_through_unchanged() -> None:
 
 
 def test_no_static_key_configured_leaves_ciphertext_untouched() -> None:
-    decoder = _make_decoder(static_telemetry_key=None)
+    decoder = _make_decoder(static_telemetry_keys={})
     position = mesh_pb2.Position(latitude_i=407128000, longitude_i=-740060000)
     plaintext = position.SerializeToString()
 
-    ciphertext = _static_key_encrypt(_STATIC_KEY, decoder, plaintext, 42, 0x11223344)
-    envelope = _build_envelope(decoder, ciphertext, portnums_pb2.PortNum.POSITION_APP, 42, 0x11223344)
+    ciphertext = _static_key_encrypt(_STATIC_KEY, decoder, plaintext, 42, _NODE_ID)
+    envelope = _build_envelope(decoder, ciphertext, portnums_pb2.PortNum.POSITION_APP, 42, _NODE_ID)
 
     result = decoder.decode_to_mesh_packet(_TOPIC, envelope)
 
@@ -137,15 +143,56 @@ def test_no_static_key_configured_leaves_ciphertext_untouched() -> None:
     assert result.decoded.payload == ciphertext
 
 
+def test_no_key_configured_for_this_sender_leaves_ciphertext_untouched() -> None:
+    """A key configured for one node must not be applied to another node's
+    packets, even though both arrive over the same channel."""
+    other_node_id = 0xAABBCCDD
+    decoder = _make_decoder(static_telemetry_keys={_NODE_ID: _STATIC_KEY_B64})
+    position = mesh_pb2.Position(latitude_i=407128000, longitude_i=-740060000)
+    plaintext = position.SerializeToString()
+
+    ciphertext = _static_key_encrypt(_STATIC_KEY, decoder, plaintext, 42, other_node_id)
+    envelope = _build_envelope(decoder, ciphertext, portnums_pb2.PortNum.POSITION_APP, 42, other_node_id)
+
+    result = decoder.decode_to_mesh_packet(_TOPIC, envelope)
+
+    assert result is not None
+    assert result.decoded.payload == ciphertext
+
+
+def test_different_nodes_can_use_different_keys() -> None:
+    node_a, node_b = _NODE_ID, 0xAABBCCDD
+    key_a, key_b = _STATIC_KEY, b"\x22" * 32
+    decoder = _make_decoder(
+        static_telemetry_keys={node_a: base64.b64encode(key_a).decode(), node_b: base64.b64encode(key_b).decode()}
+    )
+
+    position_a = mesh_pb2.Position(latitude_i=1, longitude_i=2, altitude=3, time=1700000000, sats_in_view=4)
+    plaintext_a = position_a.SerializeToString()
+    ciphertext_a = _static_key_encrypt(key_a, decoder, plaintext_a, 1, node_a)
+    envelope_a = _build_envelope(decoder, ciphertext_a, portnums_pb2.PortNum.POSITION_APP, 1, node_a)
+    result_a = decoder.decode_to_mesh_packet(_TOPIC, envelope_a)
+    assert result_a is not None
+    assert result_a.decoded.payload == plaintext_a
+
+    position_b = mesh_pb2.Position(latitude_i=5, longitude_i=6, altitude=7, time=1700000001, sats_in_view=8)
+    plaintext_b = position_b.SerializeToString()
+    ciphertext_b = _static_key_encrypt(key_b, decoder, plaintext_b, 2, node_b)
+    envelope_b = _build_envelope(decoder, ciphertext_b, portnums_pb2.PortNum.POSITION_APP, 2, node_b)
+    result_b = decoder.decode_to_mesh_packet(_TOPIC, envelope_b)
+    assert result_b is not None
+    assert result_b.decoded.payload == plaintext_b
+
+
 def test_wrong_static_key_leaves_ciphertext_undecrypted() -> None:
-    decoder = _make_decoder(static_telemetry_key=base64.b64encode(b"\x22" * 32).decode())
+    decoder = _make_decoder(static_telemetry_keys={_NODE_ID: base64.b64encode(b"\x22" * 32).decode()})
     position = mesh_pb2.Position(
         latitude_i=407128000, longitude_i=-740060000, altitude=42, time=1700000000, sats_in_view=7
     )
     plaintext = position.SerializeToString()
 
-    ciphertext = _static_key_encrypt(_STATIC_KEY, decoder, plaintext, 42, 0x11223344)
-    envelope = _build_envelope(decoder, ciphertext, portnums_pb2.PortNum.POSITION_APP, 42, 0x11223344)
+    ciphertext = _static_key_encrypt(_STATIC_KEY, decoder, plaintext, 42, _NODE_ID)
+    envelope = _build_envelope(decoder, ciphertext, portnums_pb2.PortNum.POSITION_APP, 42, _NODE_ID)
 
     result = decoder.decode_to_mesh_packet(_TOPIC, envelope)
 
@@ -159,7 +206,7 @@ def test_static_key_does_not_apply_to_other_portnums() -> None:
     decoder = _make_decoder()
     text_bytes = b"hello mesh"
 
-    envelope = _build_envelope(decoder, text_bytes, portnums_pb2.PortNum.TEXT_MESSAGE_APP, 1, 0x11223344)
+    envelope = _build_envelope(decoder, text_bytes, portnums_pb2.PortNum.TEXT_MESSAGE_APP, 1, _NODE_ID)
     result = decoder.decode_to_mesh_packet(_TOPIC, envelope)
 
     assert result is not None
@@ -167,11 +214,11 @@ def test_static_key_does_not_apply_to_other_portnums() -> None:
 
 
 def test_invalid_base64_static_key_is_ignored_not_fatal() -> None:
-    decoder = _make_decoder(static_telemetry_key="not valid base64!!!")
+    decoder = _make_decoder(static_telemetry_keys={_NODE_ID: "not valid base64!!!"})
     position = mesh_pb2.Position(latitude_i=1, longitude_i=2)
     plaintext = position.SerializeToString()
 
-    envelope = _build_envelope(decoder, plaintext, portnums_pb2.PortNum.POSITION_APP, 1, 0x11223344)
+    envelope = _build_envelope(decoder, plaintext, portnums_pb2.PortNum.POSITION_APP, 1, _NODE_ID)
     result = decoder.decode_to_mesh_packet(_TOPIC, envelope)
 
     assert result is not None
@@ -199,7 +246,7 @@ def test_static_key_round_trip_property(
     reason - the decryption itself (the thing actually under test here) works
     identically regardless of message size.
     """
-    decoder = _make_decoder()
+    decoder = _make_decoder(static_telemetry_keys={from_node_id: _STATIC_KEY_B64})
     position = mesh_pb2.Position(
         latitude_i=latitude_i, longitude_i=longitude_i, altitude=altitude, time=1700000000, sats_in_view=sats_in_view
     )

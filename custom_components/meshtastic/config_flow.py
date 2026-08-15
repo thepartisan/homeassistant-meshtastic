@@ -40,8 +40,8 @@ from .const import (
     CONF_CONNECTION_TCP_PORT,
     CONF_CONNECTION_TYPE,
     CONF_OPTION_ADD_ANOTHER_NODE,
+    CONF_OPTION_FILTER_NODE_STATIC_KEY,
     CONF_OPTION_FILTER_NODES,
-    CONF_OPTION_MQTT_STATIC_TELEMETRY_KEY,
     CONF_OPTION_NODE,
     CONF_OPTION_NOTIFY_PLATFORM,
     CONF_OPTION_NOTIFY_PLATFORM_CHANNELS,
@@ -138,6 +138,7 @@ def _step_mqtt_devices_schema_factory() -> vol.Schema:
         {
             vol.Optional("device_id", default=""): cv.string,
             vol.Optional("device_name", default=""): cv.string,
+            vol.Optional("device_static_key", default=""): cv.string,
             vol.Optional("add_another_device", default=False): cv.boolean,
         }
     )
@@ -485,6 +486,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             device_id_raw = user_input.get("device_id", "").strip()
             device_name = user_input.get("device_name", "").strip()
+            device_static_key = user_input.get("device_static_key", "").strip()
 
             if device_id_raw:
                 try:
@@ -492,10 +494,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 except ValueError:
                     errors["device_id"] = "invalid_node_id"
 
+                if not errors and device_static_key:
+                    try:
+                        base64.b64decode(device_static_key)
+                    except Exception:
+                        errors["device_static_key"] = "invalid_static_telemetry_key"
+
                 if not errors:
-                    self._mqtt_devices.append(
-                        {"id": parsed_id, "name": device_name or f"Unknown (id: {parsed_id})"}
-                    )
+                    device_entry = {"id": parsed_id, "name": device_name or f"Unknown (id: {parsed_id})"}
+                    if device_static_key:
+                        device_entry[CONF_OPTION_FILTER_NODE_STATIC_KEY] = device_static_key
+                    self._mqtt_devices.append(device_entry)
 
                     if user_input.get("add_another_device", False):
                         return await self.async_step_mqtt_devices()
@@ -913,6 +922,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         checking/unchecking entries only ever removes something you explicitly
         added; adding a new device is always via manual entry, never a dropdown
         of auto-discovered nodes.
+
+        Each tracked device may have its own static telemetry key (re-submit its
+        node ID with a new "manual_static_key" to set/change it, the same way
+        re-submitting with a new "manual_node_name" renames it) since different
+        nodes may be configured with different keys in the firmware.
         """
         errors: dict[str, str] = {}
 
@@ -920,39 +934,46 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         node_options = {
             str(el["id"]): el.get("name") or f"Unknown (id: {el['id']})" for el in current_filter_nodes
         }
-        current_static_telemetry_key = self.config_entry.options.get(CONF_OPTION_MQTT_STATIC_TELEMETRY_KEY, "")
+        node_static_keys = {el["id"]: el.get(CONF_OPTION_FILTER_NODE_STATIC_KEY, "") for el in current_filter_nodes}
 
         if user_input is not None:
             kept_ids = [int(node_id) for node_id in user_input.get(CONF_OPTION_FILTER_NODES, [])]
 
             manual_node_id = user_input.get("manual_node_id", "").strip()
             manual_node_name = user_input.get("manual_node_name", "").strip()
+            manual_static_key = user_input.get("manual_static_key", "").strip()
             if manual_node_id:
                 try:
                     parsed_id = _parse_manual_node_id(manual_node_id)
                 except ValueError:
                     errors["manual_node_id"] = "invalid_node_id"
                 else:
-                    if parsed_id not in kept_ids:
-                        kept_ids.append(parsed_id)
-                    node_options[str(parsed_id)] = manual_node_name or node_options.get(
-                        str(parsed_id), f"Unknown (id: {parsed_id})"
-                    )
+                    if manual_static_key:
+                        try:
+                            base64.b64decode(manual_static_key)
+                        except Exception:
+                            errors["manual_static_key"] = "invalid_static_telemetry_key"
 
-            static_telemetry_key = user_input.get("static_telemetry_key", "").strip()
-            if static_telemetry_key:
-                try:
-                    base64.b64decode(static_telemetry_key)
-                except Exception:
-                    errors["static_telemetry_key"] = "invalid_static_telemetry_key"
+                    if not errors:
+                        if parsed_id not in kept_ids:
+                            kept_ids.append(parsed_id)
+                        node_options[str(parsed_id)] = manual_node_name or node_options.get(
+                            str(parsed_id), f"Unknown (id: {parsed_id})"
+                        )
+                        if manual_static_key:
+                            node_static_keys[parsed_id] = manual_static_key
 
             if not errors:
+                new_filter_nodes = []
+                for node_id in kept_ids:
+                    node_entry = {"id": node_id, "name": node_options.get(str(node_id), f"Unknown (id: {node_id})")}
+                    static_key = node_static_keys.get(node_id, "")
+                    if static_key:
+                        node_entry[CONF_OPTION_FILTER_NODE_STATIC_KEY] = static_key
+                    new_filter_nodes.append(node_entry)
+
                 new_data = {
-                    CONF_OPTION_FILTER_NODES: [
-                        {"id": node_id, "name": node_options.get(str(node_id), f"Unknown (id: {node_id})")}
-                        for node_id in kept_ids
-                    ],
-                    CONF_OPTION_MQTT_STATIC_TELEMETRY_KEY: static_telemetry_key,
+                    CONF_OPTION_FILTER_NODES: new_filter_nodes,
                 }
                 return self.async_create_entry(title="", data=new_data)
 
@@ -964,7 +985,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 ): cv.multi_select(node_options),
                 vol.Optional("manual_node_id", default=""): cv.string,
                 vol.Optional("manual_node_name", default=""): cv.string,
-                vol.Optional("static_telemetry_key", default=current_static_telemetry_key): cv.string,
+                vol.Optional("manual_static_key", default=""): cv.string,
             }
         )
         return self.async_show_form(
