@@ -101,7 +101,14 @@ async def setup_platform_entry(
 
     def on_coordinator_data_update() -> None:
         entities = entity_factory(get_nodes(entry), entry.runtime_data)
-        new_entities = [s for s in entities if s.entity_id not in platform.entities]
+        # Dedup by unique_id, not entity_id: entity_id bakes in the gateway node's
+        # live shortName (see MeshtasticNodeEntity), which can be unknown on the
+        # first call and resolve later - recomputing it would then look "new" here
+        # even though unique_id (stable, and what the entity registry actually
+        # keys on) hasn't changed, causing HA to reject it as a duplicate unique_id
+        # on every subsequent coordinator update.
+        existing_unique_ids = {e.unique_id for e in platform.entities.values()}
+        new_entities = [s for s in entities if s.unique_id not in existing_unique_ids]
         if new_entities:
             async_add_entities(new_entities)
 
