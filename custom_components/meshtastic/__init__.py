@@ -197,7 +197,18 @@ async def _setup_meshtastic_devices(
         filter_node_nums = [el["id"] for el in filter_nodes]
 
     device_hardware_names = await fetch_meshtastic_hardware_names(hass)
-    for node_id, node in nodes.items():
+
+    # Every non-gateway device is created with via_device pointing at the gateway's
+    # own device entry, so that entry must already exist by the time it's
+    # referenced - otherwise device_registry.async_get_or_create() gets a
+    # dangling via_device (HA logs a deprecation warning today, will raise in
+    # 2025.12.0). dict iteration order from async_get_all_nodes() doesn't
+    # guarantee the gateway comes first, so process it explicitly before the rest.
+    gateway_node_id = cast("int", gateway_node["num"])
+    ordered_node_ids = sorted(nodes.keys(), key=lambda n: n != gateway_node_id)
+
+    for node_id in ordered_node_ids:
+        node = nodes[node_id]
         if node_id in filter_node_nums:
             await _setup_meshtastic_device(
                 client, device_hardware_names, device_registry, entry, gateway_node, node, node_id
